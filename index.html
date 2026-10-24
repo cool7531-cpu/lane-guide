@@ -437,6 +437,14 @@ $('b-sim').onclick=()=>startDrive(true);
 $('b-stop').onclick=()=>stopDrive('');
 
 /* ===================== 시작 ===================== */
+(function importKeysFromHash(){
+  const h=location.hash.slice(1); if(!h) return;
+  const p=new URLSearchParams(h); let changed=false;
+  if(p.get('tmap')){ keys.tmap=p.get('tmap').trim(); changed=true; }
+  if(p.get('its')){ keys.its=p.get('its').trim(); changed=true; }
+  if(changed){ store.set('keys',keys); $('k-tmap').value=keys.tmap; $('k-its').value=keys.its; }
+  history.replaceState(null,'',location.pathname);
+})();
 show(keys.tmap&&keys.its ? 'v-home' : 'v-setup');
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 </script>
