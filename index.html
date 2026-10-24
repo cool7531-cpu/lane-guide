@@ -65,6 +65,8 @@ label.chk{display:flex;gap:8px;align-items:center}
 label.chk input{width:auto;flex:0 0 auto}
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .topbar button{padding:8px 12px;font-size:14px}
+button.spd{padding:8px 12px;font-size:14px}
+button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);font-weight:700}
 @media (prefers-reduced-motion:no-preference){.alert{animation:pulse 1.2s ease-in-out 3}}
 @keyframes pulse{50%{background:#3a2e10}}
 </style>
@@ -128,6 +130,10 @@ label.chk input{width:auto;flex:0 0 auto}
     <button id="b-drive" class="primary grow">안내 시작 (GPS)</button>
     <button id="b-sim" class="grow">시험 주행 (가상)</button>
   </div>
+  <div class="row">
+    <span class="muted">시험 배속</span>
+    <button class="spd" data-x="5">5배</button><button class="spd" data-x="10">10배</button><button class="spd" data-x="20">20배</button><button class="spd" data-x="40">40배</button>
+  </div>
 </section>
 
 <!-- ============ 주행 ============ -->
@@ -145,6 +151,7 @@ label.chk input{width:auto;flex:0 0 auto}
     <div><b id="d-prog">0.0</b><span>진행 km</span></div>
     <div><b id="d-remain">0</b><span>남은 안내</span></div>
   </div>
+  <div class="row" id="d-spd" hidden><span class="muted">배속</span><button class="spd" data-x="5">5배</button><button class="spd" data-x="10">10배</button><button class="spd" data-x="20">20배</button><button class="spd" data-x="40">40배</button></div>
   <div id="d-banner" class="banner" hidden></div>
   <div class="log" id="d-log"></div>
 </section>
@@ -368,9 +375,10 @@ async function startDrive(sim){
   try{ drive.wake=await navigator.wakeLock?.request('screen'); }catch(e){}
   document.addEventListener('visibilitychange',async()=>{ if(document.visibilityState==='visible'&&drive&&!drive.wake){ try{drive.wake=await navigator.wakeLock?.request('screen');}catch(e){} } });
   if(sim){
-    let along=0; const v=100/3.6; const lat0=route.poly[0][1];
-    drive.timer=setInterval(()=>{ along+=v*1; if(along>route.total+500){ stopDrive('도착'); return; } onProgress(along, 100); },1000);
-    log('가상 100km/h 로 경로를 따라 이동');
+    let along=0; const v=100/3.6;
+    $('d-spd').hidden=false;
+    drive.timer=setInterval(()=>{ along+=v*0.5*simX; if(along>route.total+500){ stopDrive('도착'); return; } onProgress(along, 100*simX); },500);
+    log(`가상 100km/h × ${simX}배속`);
   }else{
     drive.watchId=navigator.geolocation.watchPosition(g=>{
       const p=[g.coords.longitude,g.coords.latitude]; const lat0=route.poly[0][1];
@@ -435,7 +443,11 @@ function stopDrive(reason){
   speechSynthesis?.cancel(); if(reason) speak(reason==='도착'?'목적지 부근입니다. 안내를 종료합니다':'안내를 종료합니다');
   drive=null; show('v-route');
 }
-$('b-drive').onclick=()=>startDrive(false);
+let simX=+store.get('simX',10)||10;
+function markSpd(){ document.querySelectorAll('button.spd').forEach(b=>b.classList.toggle('on', +b.dataset.x===simX)); }
+document.querySelectorAll('button.spd').forEach(b=>b.onclick=()=>{ simX=+b.dataset.x; store.set('simX',simX); markSpd(); if(drive&&drive.sim) log(`배속 ${simX}배`); });
+markSpd();
+$('b-drive').onclick=()=>{ $('d-spd').hidden=true; startDrive(false); };
 $('b-sim').onclick=()=>startDrive(true);
 $('b-stop').onclick=()=>stopDrive('');
 
