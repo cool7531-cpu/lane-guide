@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<title>합류 차로 안내</title>
+<style>
+/* 레이아웃: 운전 중 한 눈에 보는 단일 화면. 위쪽 큰 숫자(다음 IC·거리), 가운데 CCTV, 아래 상태. */
+:root{
+  --bg:#0b0f14; --panel:#131a22; --line:#243040; --fg:#e8eef5; --muted:#8a9bb0;
+  --accent:#ffb020; --ok:#3ddc84; --warn:#ff5c5c; --blue:#4da3ff;
+  --font:"Noto Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
+  --mono:"Roboto Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:env(safe-area-inset-top,0px) env(safe-area-inset-bottom,0px);word-break:keep-all;overflow-wrap:anywhere}
+h1{font-size:18px;margin:0;font-weight:700}
+h2{font-size:14px;margin:0;color:var(--muted);font-weight:600;letter-spacing:.04em}
+button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;cursor:pointer}
+button.primary{background:var(--accent);color:#1a1200;border-color:var(--accent);font-weight:700}
+button.danger{border-color:var(--warn);color:var(--warn)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+input{font:inherit;color:var(--fg);background:#0e1419;border:1px solid var(--line);border-radius:10px;padding:12px 14px;width:100%}
+.view{display:none;flex-direction:column;gap:14px;padding-block:14px;min-height:100%}
+.view.active{display:flex}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.row>*{min-width:0}
+.grow{flex:1 1 160px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.muted{color:var(--muted);font-size:14px}
+.list{display:flex;flex-direction:column;gap:6px}
+.item{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0e1419}
+.item .name{font-weight:600}
+.item .sub{color:var(--muted);font-size:13px}
+.tag{font-size:12px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.tag.go{color:var(--accent);border-color:var(--accent)}
+.tag.skip{color:var(--muted)}
+.tag.ok{color:var(--ok);border-color:var(--ok)}
+.tag.bad{color:var(--warn);border-color:var(--warn)}
+/* 주행 화면 */
+.big{font-size:clamp(40px,14vw,76px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.big small{font-size:.38em;font-weight:600;color:var(--muted);margin-left:6px}
+.icname{font-size:clamp(22px,7vw,34px);font-weight:700}
+.cctv{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3;max-width:100%;border:1px solid var(--line)}
+.cctv img{width:100%;height:100%;object-fit:contain;display:block}
+.cctv .cap{position:absolute;left:0;right:0;bottom:0;padding:8px 12px;font-size:13px;background:rgba(0,0,0,.6);color:#fff}
+.stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat div{background:#0e1419;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--muted)}
+.alert{border-left:4px solid var(--accent);background:#1e1a0e;padding:12px 14px;border-radius:10px;font-size:18px;font-weight:700}
+.banner{padding:10px 14px;border-radius:10px;background:#1a2230;color:var(--fg);font-size:14px}
+.banner.bad{background:#2a1515;color:#ffb3b3}
+.log{font-family:var(--mono);font-size:12px;color:var(--muted);max-height:120px;overflow:auto;white-space:pre-wrap}
+label.chk{display:flex;gap:8px;align-items:center}
+label.chk input{width:auto;flex:0 0 auto}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.topbar button{padding:8px 12px;font-size:14px}
+@media (prefers-reduced-motion:no-preference){.alert{animation:pulse 1.2s ease-in-out 3}}
+@keyframes pulse{50%{background:#3a2e10}}
+</style>
+</head>
+<body>
+
+<!-- ============ 설정 ============ -->
+<section id="v-setup" class="view">
+  <div class="topbar"><h1>합류 차로 안내</h1><span class="muted">설정</span></div>
+  <div class="card">
+    <h2>API 키 (이 폰에만 저장됨)</h2>
+    <label>티맵 앱키 (SK open API)<input id="k-tmap" type="password" autocomplete="off" placeholder="appKey"></label>
+    <label>국가교통정보센터 CCTV 키<input id="k-its" type="password" autocomplete="off" placeholder="apiKey"></label>
+    <label class="chk"><input id="k-show" type="checkbox"> 키 보이기</label>
+    <div class="row"><button id="b-savekeys" class="primary grow">저장하고 키 확인</button></div>
+    <div id="keys-status" class="muted"></div>
+  </div>
+  <div class="card">
+    <h2>안내 설정</h2>
+    <label>안내 거리 (m)<input id="s-dist" type="number" inputmode="numeric" value="2000" min="500" max="5000" step="100"></label>
+    <label>안내 문구 ({IC} 자리에 IC 이름이 들어감)<input id="s-phrase" value="{IC} 진입 차량 많은 구간입니다. 왼쪽 차로로 이동하세요."></label>
+    <div class="row"><button id="b-testtts" class="grow">음성 테스트</button><button id="b-savepref" class="grow">저장</button></div>
+  </div>
+  <div class="card">
+    <h2>데이터</h2>
+    <div class="muted">IC·JCT 좌표 <b id="ic-count">0</b>곳 내장 (한국도로공사, 2026-10-24 기준)</div>
+  </div>
+  <div class="row"><button id="b-tohome" class="primary grow">목적지 선택으로</button></div>
+</section>
+
+<!-- ============ 목적지 ============ -->
+<section id="v-home" class="view">
+  <div class="topbar"><h1>어디로 갈까요</h1><button id="b-tosetup">설정</button></div>
+  <div class="card">
+    <div class="row"><input id="q" class="grow" placeholder="목적지 검색 (예: 수원역, 부산역)" enterkeyhint="search"><button id="b-search">검색</button></div>
+    <div id="results" class="list"></div>
+  </div>
+  <div class="card">
+    <h2>자주 가는 곳</h2>
+    <div id="favs" class="list"><div class="muted">아직 없음. 검색 결과에서 ★ 로 저장.</div></div>
+  </div>
+  <div class="card">
+    <h2>출발지</h2>
+    <label class="chk"><input id="start-gps" type="checkbox" checked> 현재 위치에서 출발</label>
+    <div class="row"><input id="q-start" class="grow" placeholder="출발지 검색 (집에서 미리 확인할 때)"><button id="b-search-start">검색</button></div>
+    <div id="results-start" class="list"></div>
+    <div id="start-label" class="muted">출발: 현재 위치</div>
+  </div>
+</section>
+
+<!-- ============ 경로 확인 ============ -->
+<section id="v-route" class="view">
+  <div class="topbar"><h1 id="r-title">경로 확인</h1><button id="b-back-home">뒤로</button></div>
+  <div id="r-summary" class="banner"></div>
+  <div class="card">
+    <h2>경로상 IC / JCT</h2>
+    <div class="muted">안내 = 지나치는 합류 지점. 진입·진출 지점은 안내하지 않음.</div>
+    <div id="r-ics" class="list"></div>
+  </div>
+  <div class="row">
+    <button id="b-drive" class="primary grow">안내 시작 (GPS)</button>
+    <button id="b-sim" class="grow">시험 주행 (가상)</button>
+  </div>
+</section>
+
+<!-- ============ 주행 ============ -->
+<section id="v-drive" class="view">
+  <div class="topbar"><h1 id="d-dest">주행 중</h1><button id="b-stop" class="danger">종료</button></div>
+  <div id="d-alert" class="alert" hidden></div>
+  <div class="card">
+    <div class="muted" id="d-nextlabel">다음 합류 지점</div>
+    <div class="icname" id="d-icname">—</div>
+    <div class="big"><span id="d-dist">—</span><small id="d-distunit"></small></div>
+  </div>
+  <div class="cctv" id="d-cctv" hidden><img id="d-img" alt="합류부 CCTV"><div class="cap" id="d-cap"></div></div>
+  <div class="stat">
+    <div><b id="d-speed">0</b><span>km/h</span></div>
+    <div><b id="d-prog">0.0</b><span>진행 km</span></div>
+    <div><b id="d-remain">0</b><span>남은 안내</span></div>
+  </div>
+  <div id="d-banner" class="banner" hidden></div>
+  <div class="log" id="d-log"></div>
+</section>
+
+<script>
+'use strict';
+/* ===================== 데이터 ===================== */
+const IC = [["구서IC",129.097294,35.250563,"경부선"],["양산IC",129.049554,35.377922,"경부선"],["통도사IC",129.095698,35.499555,"경부선"],["서울주JCT",129.122676,35.555023,"경부선"],["경주IC",129.186152,35.807747,"경부선"],["서경주IC",129.083394,35.842126,"경부선"],["영천IC",128.95039,35.92639,"경부선"],["경산IC",128.79331,35.875731,"경부선"],["북대구IC",128.581626,35.910527,"경부선"],["남구미IC",128.368722,36.070676,"경부선"],["구미IC",128.361766,36.11214,"경부선"],["김천IC",128.094706,36.131586,"경부선"],["황간IC",127.900526,36.221877,"경부선"],["영동IC",127.830124,36.269405,"경부선"],["금강IC",127.672598,36.279883,"경부선"],["옥천IC",127.559828,36.313251,"경부선"],["대전IC",127.450786,36.362856,"경부선"],["신탄진IC",127.419601,36.441175,"경부선"],["남청주IC",127.423769,36.533978,"경부선"],["청주IC",127.381149,36.625222,"경부선"],["독립기념관IC",127.218357,36.758035,"경부선"],["천안IC",127.169628,36.825941,"경부선"],["안성IC",127.155463,36.992526,"경부선"],["오산IC",127.084499,37.143346,"경부선"],["기흥IC",127.099914,37.222713,"경부선"],["수원신갈IC",127.104032,37.266675,"경부선"],["대왕판교IC",127.090615,37.409271,"경부선"],["양재IC",127.038257,37.463657,"경부선"],["왜관IC",128.428737,35.978566,"경부선"],["판교IC",127.099325,37.40043,"경부선"],["노포IC",129.100579,35.285548,"경부선"],["칠곡물류IC",128.455043,35.957324,"경부선"],["기흥동탄IC",127.094225,37.216701,"경부선"],["동김천IC",128.176223,36.135652,"경부선"],["북천안IC",127.181623,36.899822,"경부선"],["양산JCT",129.039954,35.334368,"경부선"],["비룡JCT",127.482064,36.342816,"경부선"],["회덕JCT",127.419813,36.403769,"경부선"],["남이JCT",127.421191,36.599018,"경부선"],["천안JCT",127.176166,36.765876,"경부선"],["안성JCT",127.139998,37.034227,"경부선"],["신갈JCT",127.102985,37.288081,"경부선"],["영천JCT",129.004771,35.920183,"경부선"],["활천IC",129.192336,35.711839,"경부선"],["경주IC",129.128666,35.56762,"경부선"],["금토JCT",127.084526,37.415712,"경부선"],["옥산하이패스IC",127.369469,36.657644,"경부선"],["북구미IC",128.30168,36.14279,"경부선"],["남사진위IC",127.116509,37.106888,"경부선"],["추풍령IC",128.004514,36.199416,"경부선"],["동대구JCT",128.692159,35.885408,"경부선"],["서영천IC",128.892179,35.896577,"경부선"],["상서하이패스IC",127.418768,36.424794,"경부선"],["동탄JCT",127.095604,37.177713,"경부선"],["서영암IC",126.530551,34.752083,"남해선(영암순천)"],["강진무위사IC",126.715919,34.691508,"남해선(영암순천)"],["학산IC",126.574458,34.735942,"남해선(영암순천)"],["고흥IC",127.340158,34.825026,"남해선(영암순천)"],["도롱IC",127.532071,34.903862,"남해선(영암순천)"],["장흥IC",126.907579,34.708957,"남해선(영암순천)"],["보성IC",127.106829,34.813224,"남해선(영암순천)"],["벌교IC",127.299958,34.837148,"남해선(영암순천)"],["순천만IC",127.480186,34.895891,"남해선(영암순천)"],["서순천IC",127.483409,35.000101,"남해선(순천부산)"],["순천IC",127.52032,34.980543,"남해선(순천부산)"],["광양IC",127.600785,34.970931,"남해선(순천부산)"],["동광양IC",127.658943,34.965592,"남해선(순천부산)"],["옥곡IC",127.709171,34.983698,"남해선(순천부산)"],["진월IC",127.746755,34.977565,"남해선(순천부산)"],["진교IC",127.904994,35.040054,"남해선(순천부산)"],["곤양IC",127.966612,35.055547,"남해선(순천부산)"],["축동IC",128.042087,35.087469,"남해선(순천부산)"],["사천IC",128.091471,35.115471,"남해선(순천부산)"],["진주IC",128.124851,35.161716,"남해선(순천부산)"],["문산IC",128.157948,35.17422,"남해선(순천부산)"],["진성IC",128.225844,35.191071,"남해선(순천부산)"],["지수IC",128.269456,35.226333,"남해선(순천부산)"],["군북IC",128.316976,35.281811,"남해선(순천부산)"],["장지IC",128.345227,35.292757,"남해선(순천부산)"],["함안IC",128.390595,35.290161,"남해선(순천부산)"],["동창원IC",128.700851,35.282758,"남해선(순천부산)"],["진례IC",128.757936,35.264095,"남해선(순천부산)"],["서김해IC",128.845025,35.217974,"남해선(순천부산)"],["하동IC",127.815574,35.003358,"남해선(순천부산)"],["동김해IC",128.896559,35.225854,"남해선(순천부산)"],["냉정JCT",128.795084,35.218916,"남해선(순천부산)"],["대저JCT",128.975764,35.220651,"남해선(순천부산)"],["북창원IC",128.608777,35.290799,"남해선(순천부산)"],["칠원JCT",128.510975,35.283665,"남해선(순천부산)"],["무안공항IC",126.389586,35.000963,"무안광주선"],["북무안IC",126.435458,35.01466,"무안광주선"],["나주IC",126.692415,35.102236,"무안광주선"],["문평IC",126.597828,35.06771,"무안광주선"],["동함평IC",126.546585,35.051224,"무안광주선"],["함평JCT",126.487368,35.030372,"무안광주선"],["서광산IC",126.73688,35.11326,"무안광주선"],["운수IC",126.780693,35.159044,"무안광주선"],["함양IC",127.750464,35.530654,"광주대구선"],["담양IC",126.978109,35.282449,"광주대구선"],["동고령IC",128.365504,35.753145,"광주대구선"],["거창IC",127.928888,35.678941,"광주대구선"],["가조IC",128.02697,35.70339,"광주대구선"],["고령IC",128.253321,35.69676,"광주대구선"],["해인사IC",128.184676,35.696542,"광주대구선"],["옥포JCT",128.461992,35.791295,"광주대구선"],["고서JCT",126.95904,35.223659,"광주대구선"],["순창IC",127.133774,35.365139,"광주대구선"],["지리산IC",127.588732,35.483576,"광주대구선"],["남원IC",127.398346,35.429213,"광주대구선"],["동남원IC",127.477678,35.477981,"광주대구선"],["서함양하이패스IC",127.709987,35.541145,"광주대구선"],["배내골나들목IC",129.007677,35.52493,"함양울산선"],["밀양JCT",128.796301,35.516845,"함양울산선"],["창녕JCT",128.51265,35.464661,"함양울산선"],["서밀양IC",128.680095,35.495909,"함양울산선"],["서울주JCT",129.117592,35.513694,"함양울산선"],["울주JCT",129.257403,35.503934,"함양울산선"],["영산IC",128.504241,35.448556,"함양울산선"],["고창IC",126.663344,35.440076,"서해안선"],["선운산IC",126.686562,35.510234,"서해안선"],["줄포IC",126.696411,35.596908,"서해안선"],["부안IC",126.773385,35.727361,"서해안선"],["서김제IC",126.839482,35.834979,"서해안선"],["동군산IC",126.825874,35.943402,"서해안선"],["군산IC",126.795854,36.007256,"서해안선"],["서천IC",126.688894,36.097015,"서해안선"],["춘장대IC",126.603718,36.168139,"서해안선"],["대천IC",126.575118,36.333093,"서해안선"],["광천IC",126.58597,36.498469,"서해안선"],["홍성IC",126.560061,36.592,"서해안선"],["해미IC",126.558131,36.710074,"서해안선"],["서산IC",126.56897,36.808721,"서해안선"],["당진IC",126.702757,36.894839,"서해안선"],["송악IC",126.788329,36.936333,"서해안선"],["서평택IC",126.86942,36.998219,"서해안선"],["발안IC",126.886091,37.123007,"서해안선"],["비봉IC",126.882742,37.243684,"서해안선"],["매송IC",126.898598,37.278757,"서해안선"],["목감IC",126.869312,37.396583,"서해안선"],["금천IC",126.890138,37.460896,"서해안선"],["광명역IC",126.880741,37.403939,"서해안선"],["무창포IC",126.564116,36.24055,"서해안선"],["서평택JCT",126.893433,37.053239,"서해안선"],["팔곡JCT",126.89499,37.312058,"서해안선"],["안산JCT",126.859561,37.344906,"서해안선"],["조남JCT",126.867837,37.367639,"서해안선"],["일직JCT",126.894508,37.423224,"서해안선"],["일로IC",126.480466,34.858757,"서해안선"],["무안IC",126.498771,35.007304,"서해안선"],["함평IC",126.481454,35.099905,"서해안선"],["영광IC",126.554587,35.301719,"서해안선"],["불갑산하이패스IC",126.507363,35.239889,"서해안선"],["죽림JCT",126.466821,34.844994,"서해안선"],["팔탄JCT",126.872249,37.190962,"서해안선"],["울산IC",129.261847,35.551566,"울산선"],["평택JCT",126.976448,37.03245,"평택화성선"],["새만금IC",126.70329,35.853939,"새만금전주선"],["북김제IC",126.91831,35.840007,"새만금전주선"],["서완주JCT",127.026406,35.808471,"새만금전주선"],["동완주JCT",127.250528,35.809424,"새만금전주선"],["남전주IC",127.114097,35.757033,"새만금전주선"],["완주IC",127.152606,35.895285,"완주장수선"],["진안IC",127.443303,35.77133,"완주장수선"],["장수IC",127.590406,35.716454,"완주장수선"],["팔공산IC",128.640269,35.906648,"새만금포항선(대구~포항)"],["청통와촌IC",128.830122,35.971385,"새만금포항선(대구~포항)"],["북영천IC",128.925997,36.031704,"새만금포항선(대구~포항)"],["서포항IC",129.220024,36.069486,"새만금포항선(대구~포항)"],["학전IC",129.304174,36.045394,"새만금포항선(대구~포항)"],["도동JCT",128.662523,35.912633,"새만금포항선(대구~포항)"],["포항IC",129.314361,36.041087,"새만금포항선(대구~포항)"],["임고하이패스IC",129.008481,36.055014,"새만금포항선(대구~포항)"],["화산JCT",128.891516,36.021575,"새만금포항선(대구~포항)"],["승주IC",127.374736,35.014458,"논산천안선,호남선"],["주암IC",127.271101,35.067129,"논산천안선,호남선"],["석곡IC",127.247691,35.127353,"논산천안선,호남선"],["곡성IC",127.223717,35.226271,"논산천안선,호남선"],["옥과IC",127.115812,35.260781,"논산천안선,호남선"],["창평IC",127.001911,35.231263,"논산천안선,호남선"],["동광주IC",126.927348,35.183414,"논산천안선,호남선"],["용봉IC",126.904278,35.184165,"논산천안선,호남선"],["서광주IC",126.884045,35.183353,"논산천안선,호남선"],["광산IC",126.826227,35.216946,"논산천안선,호남선"],["장성IC",126.787051,35.284949,"논산천안선,호남선"],["백양사IC",126.80308,35.428638,"논산천안선,호남선"],["태인IC",126.927657,35.662289,"논산천안선,호남선"],["익산IC",127.113888,35.99078,"논산천안선,호남선"],["동림IC",126.862899,35.193469,"논산천안선,호남선"],["문흥IC",126.930297,35.193321,"논산천안선,호남선"],["북장성하이패스IC",126.793507,35.314333,"논산천안선,호남선"],["장성JCT",126.804514,35.330062,"논산천안선,호남선"],["산월IC",126.839717,35.203066,"논산천안선,호남선"],["익산JCT",127.092707,35.944603,"논산천안선,호남선"],["삼례IC",127.078515,35.924768,"논산천안선,호남선"],["전주IC",127.054221,35.879771,"논산천안선,호남선"],["김제IC",127.002153,35.775278,"논산천안선,호남선"],["금산사IC",126.989211,35.7368,"논산천안선,호남선"],["서전주IC",127.0375,35.826339,"논산천안선,호남선"],["정읍IC",126.834595,35.578621,"논산천안선,호남선"],["내장산IC",126.802073,35.50992,"논산천안선,호남선"],["북광산IC",126.821289,35.234069,"논산천안선,호남선"],["동전주IC",127.182628,35.847308,"순천완주선"],["상관IC",127.216128,35.757563,"순천완주선"],["오수IC",127.325008,35.554604,"순천완주선"],["임실IC",127.314702,35.631737,"순천완주선"],["서남원IC",127.339384,35.363853,"순천완주선"],["구례화엄사IC",127.418849,35.25024,"순천완주선"],["황전IC",127.459572,35.149986,"순천완주선"],["동순천IC",127.552589,34.949158,"순천완주선"],["북남원IC",127.312133,35.439268,"순천완주선"],["완주JCT",127.171418,35.88388,"순천완주선"],["남원분기JCT",127.307273,35.402879,"순천완주선"],["순천분기JCT",127.531507,34.990722,"순천완주선"],["강동고덕IC",127.15377,37.566345,"세종포천선"],["초이나들목(STA.3+020)IC",127.164006,37.531647,"세종포천선"],["남안성JCT",127.314506,36.974941,"세종포천선"],["고삼하이패스IC",127.297329,37.076077,"세종포천선"],["남용인IC",127.279215,37.149865,"세종포천선"],["용인JCT",127.255132,37.250741,"세종포천선"],["북용인JCT",127.247668,37.274268,"세종포천선"],["안성맞춤IC",127.308369,37.022335,"세종포천선"],["오포(포천)IC",127.223148,37.361627,"세종포천선"],["북용인IC",127.220404,37.331455,"세종포천선"],["오포(세종)IC",127.220609,37.353837,"세종포천선"],["광남IC",127.192185,37.395213,"세종포천선"],["동상주IC",128.29642,36.376446,"서산영덕선(상주영덕선)"],["서의성IC",128.409089,36.400408,"서산영덕선(상주영덕선)"],["북의성IC",128.68485,36.416713,"서산영덕선(상주영덕선)"],["청송IC",129.027312,36.455044,"서산영덕선(상주영덕선)"],["동청송영양IC",129.122049,36.497579,"서산영덕선(상주영덕선)"],["영덕IC",129.36719,36.382481,"서산영덕선(상주영덕선)"],["상주JCT",128.276015,36.374686,"서산영덕선(상주영덕선)"],["안동JCT",128.621839,36.433583,"서산영덕선(상주영덕선)"],["동안동IC",128.886247,36.435917,"서산영덕선(상주영덕선)"],["문의청남대IC",127.507548,36.529928,"서산영덕선(청주상주선)"],["회인IC",127.609569,36.486264,"서산영덕선(청주상주선)"],["보은IC",127.723353,36.45287,"서산영덕선(청주상주선)"],["속리산IC",127.788918,36.458009,"서산영덕선(청주상주선)"],["화서IC",127.96204,36.443256,"서산영덕선(청주상주선)"],["남상주IC",128.140993,36.370031,"서산영덕선(청주상주선)"],["청주JCT",127.428082,36.565968,"서산영덕선(청주상주선)"],["낙동JCT",128.238359,36.368293,"서산영덕선(청주상주선)"],["속리산 하이패스IC",127.869114,36.448895,"서산영덕선(청주상주선)"],["남세종IC",127.294529,36.423097,"서산영덕선(당진대전선)"],["공주IC",127.12082,36.492171,"서산영덕선(당진대전선)"],["면천IC",126.647797,36.824095,"서산영덕선(당진대전선)"],["신양IC",126.865077,36.592244,"서산영덕선(당진대전선)"],["서세종IC",127.189224,36.491678,"서산영덕선(당진대전선)"],["유구IC",126.96927,36.565608,"서산영덕선(당진대전선)"],["마곡사IC",127.025285,36.496442,"서산영덕선(당진대전선)"],["고덕IC",126.705417,36.761649,"서산영덕선(당진대전선)"],["당진JCJCT",126.61834,36.850984,"서산영덕선(당진대전선)"],["유성JCT",127.341642,36.389689,"서산영덕선(당진대전선)"],["공주JCT",127.094141,36.486377,"서산영덕선(당진대전선)"],["예산수덕사IC",126.780167,36.675584,"서산영덕선(당진대전선)"],["아산IC",126.9758,36.821652,"당진청주선"],["아산현충사IC",127.049751,36.787673,"당진청주선"],["서천안IC",127.137789,36.762104,"당진청주선"],["서진주IC",128.040729,35.183164,"통영대전선,중부선"],["단성IC",127.953075,35.291264,"통영대전선,중부선"],["산청IC",127.865441,35.424206,"통영대전선,중부선"],["생초IC",127.824345,35.481634,"통영대전선,중부선"],["지곡IC",127.767514,35.588381,"통영대전선,중부선"],["서상IC",127.673217,35.66615,"통영대전선,중부선"],["덕유산IC",127.645725,35.8421,"통영대전선,중부선"],["무주IC",127.645608,35.977492,"통영대전선,중부선"],["금산IC",127.52323,36.104877,"통영대전선,중부선"],["추부IC",127.483998,36.193676,"통영대전선,중부선"],["남대전IC",127.474086,36.265539,"통영대전선,중부선"],["판암IC",127.468413,36.317733,"통영대전선,중부선"],["서청주IC",127.418784,36.650886,"통영대전선,중부선"],["오창IC",127.444723,36.710984,"통영대전선,중부선"],["증평IC",127.50195,36.771899,"통영대전선,중부선"],["진천IC",127.471605,36.869403,"통영대전선,중부선"],["대소IC",127.47283,36.982065,"통영대전선,중부선"],["서이천IC",127.392478,37.277231,"통영대전선,중부선"],["곤지암IC",127.321108,37.351372,"통영대전선,중부선"],["경기광주IC",127.270903,37.447384,"통영대전선,중부선"],["하남IC",127.221171,37.52673,"통영대전선,중부선"],["연화산IC",128.193611,35.091237,"통영대전선,중부선"],["동고성IC",128.381611,34.970333,"통영대전선,중부선"],["통영IC",128.442579,34.867169,"통영대전선,중부선"],["북통영IC",128.407476,34.893516,"통영대전선,중부선"],["고성IC",128.349705,35.007672,"통영대전선,중부선"],["일죽IC",127.451008,37.091089,"통영대전선,중부선"],["남이천IC",127.443857,37.183101,"통영대전선,중부선"],["함양JCT",127.767968,35.537717,"통영대전선,중부선"],["장수JCT",127.606024,35.731666,"통영대전선,중부선"],["마장JCT",127.411224,37.258596,"통영대전선,중부선"],["하남JCT",127.19545,37.529723,"통영대전선,중부선"],["호법JCT",127.426487,37.238682,"통영대전선,중부선"],["산곡JCT",127.243206,37.480523,"통영대전선,중부선"],["경기광주JCT",127.316789,37.374248,"통영대전선,중부선"],["진주JCT",128.097643,35.138379,"통영대전선,중부선"],["청주강서IC",127.420044,36.619155,"통영대전선,중부선"],["신둔(이천) 하이패스IC",127.38028,37.293141,"제2중부선"],["청북IC",126.927928,37.051462,"평택제천선"],["송탄IC",127.108384,37.038115,"평택제천선"],["서안성IC",127.160063,37.036732,"평택제천선"],["남안성IC",127.246342,36.97663,"평택제천선"],["북진천IC",127.450412,36.942558,"평택제천선"],["금왕꽃동네IC",127.552361,36.952303,"평택제천선"],["음성IC",127.6207,36.984148,"평택제천선"],["서충주IC",127.672814,37.007951,"평택제천선"],["동충주IC",127.929729,37.065529,"평택제천선"],["대소JCT",127.470661,36.941829,"평택제천선"],["노은JCT",127.80062,37.036204,"평택제천선"],["제천JCT",128.175288,37.079316,"평택제천선"],["평택고덕IC",127.033582,37.02371,"평택제천선"],["현풍JCT",128.516119,35.257172,"중부내륙선"],["충주JCT",127.739738,37.040475,"중부내륙선"],["칠서IC",128.507654,35.32673,"중부내륙선"],["남지IC",128.48086,35.399207,"중부내륙선"],["창녕IC",128.474645,35.542767,"중부내륙선"],["선산IC",128.259751,36.239445,"중부내륙선"],["상주IC",128.21335,36.423018,"중부내륙선"],["충주IC",127.843358,36.975519,"중부내륙선"],["북충주IC",127.796839,37.034513,"중부내륙선"],["감곡IC",127.667621,37.122085,"중부내륙선"],["북상주IC",128.165676,36.529438,"중부내륙선"],["점촌함창IC",128.16119,36.586862,"중부내륙선"],["문경새재IC",128.113635,36.704674,"중부내륙선"],["연풍IC",127.985164,36.761282,"중부내륙선"],["괴산IC",127.924129,36.863989,"중부내륙선"],["남성주IC",128.327741,35.840267,"중부내륙선"],["성주IC",128.251173,35.917697,"중부내륙선"],["남김천IC",128.269725,36.060727,"중부내륙선"],["서여주IC",127.58643,37.302433,"중부내륙선"],["북여주IC",127.520977,37.372898,"중부내륙선"],["남여주IC",127.587921,37.253177,"중부내륙선"],["양평IC",127.44387,37.519788,"중부내륙선"],["칠원IC",128.513681,35.28035,"중부내륙선"],["여주JCT",127.595774,37.232426,"중부내륙선"],["고령JCT",128.371722,35.7602,"중부내륙선"],["김천JCT",128.266275,36.15721,"중부내륙선"],["현풍JCT",128.434707,35.674873,"중부내륙선"],["남양평IC",127.468636,37.481848,"중부내륙선"],["충주하이패스IC",127.840861,37.019902,"중부내륙선"],["월곶JCT",126.7563,37.386835,"영동선"],["용인IC",127.210391,37.258548,"영동선"],["양지IC",127.295169,37.238126,"영동선"],["덕평IC",127.36523,37.240784,"영동선"],["이천IC",127.494734,37.250082,"영동선"],["여주IC",127.652713,37.252275,"영동선"],["문막IC",127.825919,37.312855,"영동선"],["원주IC",127.950389,37.399727,"영동선"],["새말IC",128.068902,37.448602,"영동선"],["면온IC",128.361393,37.561322,"영동선"],["대관령IC",128.693423,37.678014,"영동선"],["둔대JCT",126.903378,37.321588,"영동선"],["동둔내(삽교)하이패스IC",128.275679,37.523089,"영동선"],["둔내IC",128.20489,37.495109,"영동선"],["마성IC",127.178082,37.286077,"영동선"],["서창JCT",126.740066,37.432311,"영동선"],["안산IC",126.840096,37.347474,"영동선"],["서안산IC",126.799986,37.347888,"영동선"],["군자JCT",126.768533,37.363192,"영동선"],["군포IC",126.922717,37.323746,"영동선"],["동수원IC",127.04939,37.300388,"영동선"],["북수원IC",126.988804,37.324887,"영동선"],["부곡IC",126.960446,37.325769,"영동선"],["동군포IC",126.937153,37.329333,"영동선"],["평창IC",128.411937,37.583864,"영동선"],["속사IC",128.4888,37.632799,"영동선"],["진부IC",128.562246,37.64888,"영동선"],["칠곡IC",128.535418,35.935886,"중앙선"],["다부IC",128.51677,36.045997,"중앙선"],["가산IC",128.535696,36.090722,"중앙선"],["군위IC",128.55922,36.198526,"중앙선"],["의성IC",128.580862,36.291754,"중앙선"],["남안동IC",128.625779,36.475533,"중앙선"],["서안동IC",128.621819,36.588271,"중앙선"],["예천IC",128.541034,36.667322,"중앙선"],["영주IC",128.572031,36.769835,"중앙선"],["풍기IC",128.529609,36.850834,"중앙선"],["단양IC",128.365218,36.918786,"중앙선"],["북단양IC",128.290101,37.017216,"중앙선"],["남제천IC",128.185432,37.074608,"중앙선"],["제천IC",128.144623,37.131864,"중앙선"],["신림IC",128.0889,37.2285,"중앙선"],["남원주IC",127.930333,37.324261,"중앙선"],["만종JCT",127.901185,37.363755,"중앙선"],["대동JCT",128.98395,35.281033,"중앙선"],["북원주IC",127.923012,37.423176,"중앙선"],["횡성IC",127.970421,37.502824,"중앙선"],["홍천IC",127.855933,37.678098,"중앙선"],["춘천JCT",127.764247,37.842154,"중앙선"],["신평JCT",127.893399,37.385909,"중앙선"],["초정IC",128.978753,35.23072,"중앙선"],["금호JCT",128.526109,35.894101,"중앙선"],["춘천JCT",127.788088,37.750079,"서울양양선"],["동홍천IC",127.954328,37.762305,"서울양양선"],["내촌IC",128.138631,37.787293,"서울양양선"],["인제IC",128.285474,37.916658,"서울양양선"],["서양양IC",128.534109,37.992362,"서울양양선"],["강릉IC",128.839054,37.749713,"동해선"],["남양양IC",128.794856,37.916722,"동해선"],["망상IC",129.094937,37.583752,"동해선"],["옥계IC",129.034624,37.618207,"동해선"],["북강릉IC",128.814327,37.83479,"동해선"],["동해IC",129.09381,37.512339,"동해선"],["남강릉IC",128.890992,37.694136,"동해선"],["하조대IC",128.693804,38.028414,"동해선"],["양양IC",128.592883,38.074493,"동해선"],["북양양IC",128.586442,38.15544,"동해선"],["속초ICIC",128.517738,38.203435,"동해선"],["근덕IC",129.203162,37.394517,"동해선"],["삼척IC",129.132015,37.447562,"동해선"],["강릉JCT",128.836075,37.766839,"동해선"],["양양JCT",128.601382,38.068922,"동해선"],["영일만IC",129.385974,36.107178,"동해선(포항영덕)"],["북포항IC",129.363856,36.203662,"동해선(포항영덕)"],["남영덕IC",129.364426,36.281594,"동해선(포항영덕)"],["영덕JCT",129.350024,36.379714,"동해선(포항영덕)"],["기장JCT",129.227653,35.278698,"부산포항선"],["척과구룡IC",129.277636,35.618779,"부산포항선"],["남경주IC",129.314248,35.740154,"부산포항선"],["동경주IC",129.432687,35.780674,"부산포항선"],["남포항IC",129.388936,35.946768,"부산포항선"],["울산JCT",129.249952,35.553126,"부산포항선"],["송파IC",127.129639,37.474143,"수도권제1순환선"],["산본IC",126.927675,37.374736,"수도권제1순환선"],["시흥IC",126.797632,37.455341,"수도권제1순환선"],["장수IC",126.754308,37.468346,"수도권제1순환선"],["송내IC",126.749066,37.487162,"수도권제1순환선"],["중동IC",126.749271,37.51063,"수도권제1순환선"],["계양IC",126.747792,37.544596,"수도권제1순환선"],["김포IC",126.774546,37.597603,"수도권제1순환선"],["자유로IC",126.799072,37.617909,"수도권제1순환선"],["일산IC",126.795601,37.635539,"수도권제1순환선"],["안현JCT",126.814342,37.437881,"수도권제1순환선"],["서운JCT",126.756308,37.527203,"수도권제1순환선"],["노오지JCT",126.753137,37.56979,"수도권제1순환선"],["도리분기점JCT",126.845998,37.396299,"수도권제1순환선"],["성남IC",127.123203,37.427893,"수도권제1순환선(판교퇴계원)"],["퇴계원IC",127.134454,37.639869,"수도권제1순환선(판교퇴계원)"],["판교JCT",127.093009,37.40519,"수도권제1순환선(판교퇴계원)"],["서하남IC",127.150883,37.511835,"수도권제1순환선(판교퇴계원)"],["상일IC",127.177835,37.550837,"수도권제1순환선(판교퇴계원)"],["토평IC",127.159099,37.582429,"수도권제1순환선(판교퇴계원)"],["남양주IC",127.154147,37.602022,"수도권제1순환선(판교퇴계원)"],["구리IC",127.139515,37.614911,"수도권제1순환선(판교퇴계원)"],["평촌IC",126.971585,37.380013,"수도권제1순환선(판교일산)"],["학의JCT",127.000289,37.386863,"수도권제1순환선(판교일산)"],["동마산IC",128.596317,35.251574,"남해제1지선"],["산인JCT",128.484798,35.270832,"남해제1지선"],["창원JCT",128.639322,35.274419,"남해제1지선"],["서마산IC",128.564393,35.234114,"남해제1지선"],["가락IC",128.89439,35.16878,"남해제2지선"],["서부산ICIC",128.95228,35.15634,"남해제2지선"],["장유IC",128.810234,35.1973,"남해제2지선"],["사상IC",128.972501,35.152384,"남해제2지선"],["남장유IC",128.823883,35.17778,"남해제2지선"],["신천IC",126.78069,37.429969,"제2경인선(인천안양)"],["광명IC",126.849572,37.439322,"제2경인선(인천안양)"],["석수IC",126.903144,37.423525,"제2경인선(인천안양)"],["문학IC",126.676953,37.435854,"제2경인선(인천안양)"],["학익JCT",126.650505,37.437114,"제2경인선(인천안양)"],["남동IC",126.712869,37.433966,"제2경인선(인천안양)"],["서인천IC",126.680302,37.520968,"경인선"],["부평IC",126.722754,37.524311,"경인선"],["부천IC",126.776023,37.524705,"경인선"],["신월IC",126.834835,37.525576,"경인선"],["부여IC",126.852165,36.29819,"서천공주선"],["서공주ICIC",127.054846,36.457543,"서천공주선"],["칠갑산IC",126.94612,36.376452,"서천공주선"],["서부여IC",126.790051,36.239917,"서천공주선"],["동서천IC",126.783995,36.04295,"서천공주선"],["서공주JCT",127.057742,36.484803,"서천공주선"],["동서천JCTJCT",126.774228,36.059433,"서천공주선"],["소양IC",127.238627,35.860814,"새만금포항선의 지선"],["서대전JCT",127.315675,36.294146,"호남선의 지선"],["양촌IC",127.219391,36.160142,"호남선의 지선"],["논산IC",127.1333,36.121531,"호남선의 지선"],["계룡IC",127.278761,36.252547,"호남선의 지선"],["유성IC",127.332401,36.363686,"호남선의 지선"],["북대전IC",127.3806,36.413441,"호남선의 지선"],["논산JCT",127.103355,36.079997,"호남선의 지선"],["북광주IC",126.894401,35.257386,"고창담양선"],["장성물류IC",126.760493,35.34614,"고창담양선"],["남고창IC",126.679393,35.401688,"고창담양선"],["고창JCT",126.652911,35.417183,"고창담양선"],["담양JCT",126.968265,35.251187,"고창담양선"],["대덕JCT",127.032588,35.247144,"고창담양선"],["산내JCT",127.45543,36.286567,"대전남부순환선"],["안영IC",127.376984,36.282033,"대전남부순환선"],["서대전IC",127.326934,36.290529,"대전남부순환선"],["두물머리하이패스IC",127.381917,37.563651,"수도권제2순환선"],["조안IC",127.336341,37.590747,"수도권제2순환선"],["법원IC",126.877425,37.830973,"수도권제2순환선"],["북양주IC",127.050984,37.857234,"수도권제2순환선"],["서양주IC",126.983655,37.847971,"수도권제2순환선"],["유천하이패스IC",128.501151,35.810745,"중부내륙선의 지선"],["북현풍 하이패스IC",128.436901,35.704283,"중부내륙선의 지선"],["현풍IC",128.439732,35.670758,"중부내륙선의 지선"],["화원옥포IC",128.479965,35.796427,"중부내륙선의 지선"],["달성IC",128.477218,35.756361,"중부내륙선의 지선"],["남대구IC",128.527633,35.837091,"중부내륙선의 지선"],["서대구IC",128.533673,35.880237,"중부내륙선의 지선"],["남광산나들목IC",126.744754,35.181849,"광주외곽순환선"],["남장성나들목IC",126.791539,35.224577,"광주외곽순환선"],["남장성분기점JCT",126.801857,35.259226,"광주외곽순환선"],["물금IC",129.011586,35.30749,"중앙선의 지선"],["남양산IC",129.026583,35.326298,"중앙선의 지선"],["대동JCT",128.980197,35.193066,"중앙선의 지선"],["김해JCT",128.92468,35.224528,"중앙선의 지선"],["광재IC",128.89341,35.305188,"부산외곽순환선"],["대감JCT",128.978563,35.269484,"부산외곽순환선"],["진영IC",128.768035,35.300056,"부산외곽순환선"],["한림IC",128.811905,35.295668,"부산외곽순환선"],["노포JCT",129.088727,35.293057,"부산외곽순환선"],["금정IC",129.111716,35.281473,"부산외곽순환선"],["기장철마IC",129.147607,35.28478,"부산외곽순환선"],["진영JCT",128.713627,35.277833,"부산외곽순환선"],["김해가야하이패스IC",129.002368,35.271181,"부산외곽순환선"],["상매 JCTJCT",128.699062,35.888852,"대구외곽순환선"],["파군재나들목IC",128.640492,35.936015,"대구외곽순환선"],["북다사나들목IC",128.464283,35.886168,"대구외곽순환선"],["칠곡분기점JCT",128.491868,35.905525,"대구외곽순환선"],["동명동호나들목IC",128.551388,35.966446,"대구외곽순환선"],["달서나들목IC",128.492089,35.829574,"대구외곽순환선"],["다사나들목IC",128.470351,35.85617,"대구외곽순환선"],["둔산나들목IC",128.692068,35.900571,"대구외곽순환선"],["지천나들목IC",128.531583,35.933083,"대구외곽순환선"],["서변나들목IC",128.597695,35.93253,"대구외곽순환선"]];
+/* ===================== 저장 ===================== */
+const store = {
+  get(k, d){ try{ const v=localStorage.getItem(k); return v==null? d : JSON.parse(v);}catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+const $ = id => document.getElementById(id);
+const views = ['v-setup','v-home','v-route','v-drive'];
+function show(id){ views.forEach(v=>$(v).classList.toggle('active', v===id)); window.scrollTo(0,0); }
+function log(msg){ const el=$('d-log'); const t=new Date().toTimeString().slice(0,8); el.textContent = `${t} ${msg}\n` + el.textContent.slice(0,4000); }
+
+/* ===================== 지오메트리 ===================== */
+const R = 6371000;
+function toXY(lon, lat, lat0){ const k=Math.PI/180; return [ (lon)*k*R*Math.cos(lat0*k), lat*k*R ]; }
+function dist(a, b){ // [lon,lat]
+  const k=Math.PI/180, dLat=(b[1]-a[1])*k, dLon=(b[0]-a[0])*k, la1=a[1]*k, la2=b[1]*k;
+  const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+/** 폴리라인에 점을 투영. 반환 {d: 수직거리 m, along: 누적거리 m, seg: 세그먼트 인덱스} */
+function project(poly, cum, p, lat0){
+  const P=toXY(p[0],p[1],lat0); let best={d:Infinity,along:0,seg:0};
+  for(let i=0;i<poly.length-1;i++){
+    const A=toXY(poly[i][0],poly[i][1],lat0), B=toXY(poly[i+1][0],poly[i+1][1],lat0);
+    const vx=B[0]-A[0], vy=B[1]-A[1], L2=vx*vx+vy*vy;
+    let t = L2===0?0:((P[0]-A[0])*vx+(P[1]-A[1])*vy)/L2; t=Math.max(0,Math.min(1,t));
+    const qx=A[0]+t*vx, qy=A[1]+t*vy, d=Math.hypot(P[0]-qx,P[1]-qy);
+    if(d<best.d) best={d, along:cum[i]+t*(cum[i+1]-cum[i]), seg:i};
+  }
+  return best;
+}
+const isHighway = name => /고속/.test(name||'');
+
+/** 티맵 경로 응답 → {poly, cum, names(세그먼트별 도로명), total, time} */
+function buildRoute(geojson){
+  const poly=[], names=[]; // names[i] = poly[i]→poly[i+1] 구간의 도로명
+  for(const f of geojson.features||[]){
+    if(f.geometry.type!=='LineString') continue;
+    const nm=f.properties.name||'';
+    const cs=f.geometry.coordinates;
+    for(let i=0;i<cs.length;i++){
+      const c=[+cs[i][0], +cs[i][1]];
+      if(poly.length && poly[poly.length-1][0]===c[0] && poly[poly.length-1][1]===c[1]) continue;
+      if(poly.length) names.push(nm);
+      poly.push(c);
+    }
+  }
+  const cum=[0]; for(let i=1;i<poly.length;i++) cum.push(cum[i-1]+dist(poly[i-1],poly[i]));
+  const p0=geojson.features.find(f=>f.geometry.type==='Point')?.properties||{};
+  return {poly, cum, names, total:+p0.totalDistance||cum[cum.length-1], time:+p0.totalTime||0};
+}
+function nameAt(route, along){ // along 지점의 도로명
+  const {cum,names}=route; let i=0; while(i<cum.length-2 && cum[i+1]<along) i++; return names[i]||'';
+}
+/** 경로상 IC 분류. 반환 [{name, along, kind:'pass'|'enter'|'exit'|'switch', lon,lat}] */
+function classifyICs(route, icData){
+  const {poly,cum}=route; if(poly.length<2) return [];
+  const lat0=poly[0][1];
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for(const p of poly){ minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]); }
+  const pad=0.01, out=new Map();
+  for(const [name,lon,lat] of icData){
+    if(lon<minX-pad||lon>maxX+pad||lat<minY-pad||lat>maxY+pad) continue;
+    const pr=project(poly,cum,[lon,lat],lat0);
+    if(pr.d>350) continue;
+    if(!isHighway(route.names[pr.seg])) continue;
+    const prev=out.get(name); if(prev && prev.d<=pr.d) continue;
+    out.set(name,{name,lon,lat,along:pr.along,d:pr.d});
+  }
+  const list=[...out.values()].sort((a,b)=>a.along-b.along);
+  const W=900;
+  for(const ic of list){
+    const before=nameAt(route, Math.max(0,ic.along-W)), after=nameAt(route, Math.min(route.cum[route.cum.length-1], ic.along+W));
+    const hb=isHighway(before), ha=isHighway(after);
+    if(!hb && ha) ic.kind='enter';
+    else if(hb && !ha) ic.kind='exit';
+    else if(hb && ha && before!==after) ic.kind='switch';
+    else if(hb && ha) ic.kind='pass';
+    else ic.kind='exit';
+  }
+  return list;
+}
+
+/* ===================== API ===================== */
+const keys = store.get('keys',{tmap:'',its:''});
+async function tmapPOI(q){
+  const u=`https://apis.openapi.sk.com/tmap/pois?version=1&searchKeyword=${encodeURIComponent(q)}&count=10&resCoordType=WGS84GEO`;
+  const r=await fetch(u,{headers:{appKey:keys.tmap}}); if(!r.ok) throw new Error('POI '+r.status);
+  const j=await r.json(); const pois=j?.searchPoiInfo?.pois?.poi||[];
+  return pois.map(p=>({name:p.name, addr:[p.upperAddrName,p.middleAddrName,p.lowerAddrName,p.roadName,p.firstBuildNo].filter(Boolean).join(' '),
+    lon:+(p.frontLon||p.noorLon), lat:+(p.frontLat||p.noorLat)}));
+}
+async function tmapRoute(s, e){
+  const r=await fetch('https://apis.openapi.sk.com/tmap/routes?version=1',{method:'POST',
+    headers:{appKey:keys.tmap,'Content-Type':'application/json',accept:'application/json'},
+    body:JSON.stringify({startX:String(s.lon),startY:String(s.lat),endX:String(e.lon),endY:String(e.lat),reqCoordType:'WGS84GEO',resCoordType:'WGS84GEO',searchOption:'0'})});
+  if(!r.ok) throw new Error('경로 '+r.status); return r.json();
+}
+async function itsCCTV(lon, lat, box=0.015){
+  const u=`https://openapi.its.go.kr:9443/cctvInfo?apiKey=${encodeURIComponent(keys.its)}&type=ex&cctvType=3&minX=${lon-box}&maxX=${lon+box}&minY=${lat-box}&maxY=${lat+box}&getType=json`;
+  const r=await fetch(u); if(!r.ok) throw new Error('CCTV '+r.status);
+  const j=await r.json(); let d=j?.response?.data||[]; if(!Array.isArray(d)) d=[d];
+  return d.map(c=>({name:String(c.cctvname||'').replace(/;$/,''), url:String(c.cctvurl||''), lon:+String(c.coordx).replace(/;/g,''), lat:+String(c.coordy).replace(/;/g,'')}))
+    .filter(c=>c.url && isFinite(c.lon)).map(c=>({...c, d:dist([c.lon,c.lat],[lon,lat])})).sort((a,b)=>a.d-b.d);
+}
+
+/* ===================== 음성 ===================== */
+let voice=null;
+function pickVoice(){ const vs=speechSynthesis.getVoices(); voice=vs.find(v=>/ko/i.test(v.lang)&&/google|samsung|yuna|sora/i.test(v.name))||vs.find(v=>/ko/i.test(v.lang))||null; }
+if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged=pickVoice; }
+function speak(text){
+  if(!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text); u.lang='ko-KR'; if(voice) u.voice=voice; u.rate=1.0; u.volume=1;
+  speechSynthesis.speak(u);
+}
+
+/* ===================== 상태 ===================== */
+const pref = store.get('pref',{dist:2000, phrase:'{IC} 진입 차량 많은 구간입니다. 왼쪽 차로로 이동하세요.'});
+let favs = store.get('favs',[]);
+let dest=null, startPt=null, route=null, ics=[];
+let drive=null; // {watchId, timer, announced:Set, prog, wake, sim}
+
+/* ===================== 설정 화면 ===================== */
+$('ic-count').textContent=IC.length;
+$('k-tmap').value=keys.tmap; $('k-its').value=keys.its;
+$('s-dist').value=pref.dist; $('s-phrase').value=pref.phrase;
+$('k-show').onchange=e=>{ const t=e.target.checked?'text':'password'; $('k-tmap').type=t; $('k-its').type=t; };
+$('b-savekeys').onclick=async()=>{
+  keys.tmap=$('k-tmap').value.trim(); keys.its=$('k-its').value.trim(); store.set('keys',keys);
+  const st=$('keys-status'); st.textContent='확인 중…';
+  const res=[];
+  try{ const p=await tmapPOI('서울역'); res.push(p.length?'티맵 OK':'티맵 응답 비어있음'); }catch(e){ res.push('티맵 실패: '+e.message); }
+  try{ const c=await itsCCTV(127.10,37.31); res.push(c.length?`CCTV OK (${c.length}대)`:'CCTV 응답 비어있음'); }catch(e){ res.push('CCTV 실패: '+e.message); }
+  st.textContent=res.join(' / ');
+};
+$('b-testtts').onclick=()=>speak(($('s-phrase').value||pref.phrase).replace('{IC}','서울주 분기점'));
+$('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
+$('b-tohome').onclick=()=>show('v-home');
+$('b-tosetup').onclick=()=>show('v-setup');
+
+/* ===================== 목적지 화면 ===================== */
+function renderFavs(){
+  const el=$('favs'); el.innerHTML='';
+  if(!favs.length){ el.innerHTML='<div class="muted">아직 없음. 검색 결과에서 ★ 로 저장.</div>'; return; }
+  favs.forEach((f,i)=>{
+    const d=document.createElement('div'); d.className='item';
+    d.innerHTML=`<div><div class="name"></div><div class="sub"></div></div><div class="row"><button data-go>출발</button><button data-del title="삭제">✕</button></div>`;
+    d.querySelector('.name').textContent=f.name; d.querySelector('.sub').textContent=f.addr;
+    d.querySelector('[data-go]').onclick=()=>chooseDest(f);
+    d.querySelector('[data-del]').onclick=()=>{ favs.splice(i,1); store.set('favs',favs); renderFavs(); };
+    el.appendChild(d);
+  });
+}
+renderFavs();
+function renderResults(el, list, onPick, withStar){
+  el.innerHTML='';
+  if(!list.length){ el.innerHTML='<div class="muted">결과 없음</div>'; return; }
+  for(const p of list){
+    const d=document.createElement('div'); d.className='item';
+    d.innerHTML=`<div><div class="name"></div><div class="sub"></div></div><div class="row">${withStar?'<button data-star>★</button>':''}<button data-go class="primary">선택</button></div>`;
+    d.querySelector('.name').textContent=p.name; d.querySelector('.sub').textContent=p.addr;
+    d.querySelector('[data-go]').onclick=()=>onPick(p);
+    if(withStar) d.querySelector('[data-star]').onclick=()=>{ if(!favs.some(f=>f.name===p.name&&f.lon===p.lon)){ favs.push(p); store.set('favs',favs); renderFavs(); } };
+    el.appendChild(d);
+  }
+}
+async function doSearch(inputId, resId, onPick, withStar){
+  const q=$(inputId).value.trim(); if(!q) return;
+  if(!keys.tmap){ show('v-setup'); $('keys-status').textContent='티맵 키를 먼저 넣으세요'; return; }
+  $(resId).innerHTML='<div class="muted">검색 중…</div>';
+  try{ renderResults($(resId), await tmapPOI(q), onPick, withStar); }catch(e){ $(resId).innerHTML=`<div class="muted">검색 실패: ${e.message}</div>`; }
+}
+$('b-search').onclick=()=>doSearch('q','results',chooseDest,true);
+$('q').addEventListener('keydown',e=>{ if(e.key==='Enter') $('b-search').click(); });
+$('b-search-start').onclick=()=>doSearch('q-start','results-start',p=>{ startPt=p; $('start-gps').checked=false; $('start-label').textContent='출발: '+p.name; $('results-start').innerHTML=''; },false);
+$('q-start').addEventListener('keydown',e=>{ if(e.key==='Enter') $('b-search-start').click(); });
+$('start-gps').onchange=e=>{ if(e.target.checked){ startPt=null; $('start-label').textContent='출발: 현재 위치'; } };
+
+function getPos(opt={}){ return new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:15000,maximumAge:5000,...opt})); }
+
+async function chooseDest(p){
+  dest=p; $('r-title').textContent=p.name; $('r-summary').textContent='경로 탐색 중…'; $('r-ics').innerHTML=''; show('v-route');
+  try{
+    let s=startPt;
+    if($('start-gps').checked||!s){ const g=await getPos(); s={lon:g.coords.longitude,lat:g.coords.latitude,name:'현재 위치'}; }
+    const gj=await tmapRoute(s,p);
+    route=buildRoute(gj); ics=classifyICs(route, IC);
+    const targets=ics.filter(i=>i.kind==='pass');
+    $('r-summary').textContent=`${s.name} → ${p.name} · ${(route.total/1000).toFixed(1)} km · 약 ${Math.round(route.time/60)}분 · 안내 지점 ${targets.length}곳`;
+    const el=$('r-ics');
+    if(!ics.length) el.innerHTML='<div class="muted">경로에 고속도로 IC가 없습니다.</div>';
+    for(const ic of ics){
+      const d=document.createElement('div'); d.className='item';
+      const kind={pass:['안내','go'],enter:['진입','skip'],exit:['진출','skip'],switch:['노선변경','skip']}[ic.kind];
+      d.innerHTML=`<div><div class="name"></div><div class="sub"></div></div><span class="tag ${kind[1]}">${kind[0]}</span>`;
+      d.querySelector('.name').textContent=ic.name; d.querySelector('.sub').textContent=`${(ic.along/1000).toFixed(1)} km 지점 · ${nameAt(route,ic.along)}`;
+      el.appendChild(d);
+    }
+  }catch(e){ $('r-summary').textContent='실패: '+e.message; $('r-summary').classList.add('bad'); }
+}
+$('b-back-home').onclick=()=>show('v-home');
+
+/* ===================== 주행 ===================== */
+function fmtDist(m){ return m>=1000? [(m/1000).toFixed(1),'km'] : [String(Math.max(0,Math.round(m/10)*10)),'m']; }
+async function startDrive(sim){
+  if(!route) return;
+  const targets=ics.filter(i=>i.kind==='pass');
+  drive={announced:new Set(), prog:0, speed:0, sim, cctvFor:null, cctvTimer:null, offCount:0, lastFix:0};
+  $('d-dest').textContent=dest.name; $('d-log').textContent=''; $('d-alert').hidden=true; $('d-banner').hidden=true; $('d-cctv').hidden=true;
+  $('d-remain').textContent=targets.length;
+  show('v-drive');
+  speak(sim?'시험 주행을 시작합니다':'안내를 시작합니다');
+  try{ drive.wake=await navigator.wakeLock?.request('screen'); }catch(e){}
+  document.addEventListener('visibilitychange',async()=>{ if(document.visibilityState==='visible'&&drive&&!drive.wake){ try{drive.wake=await navigator.wakeLock?.request('screen');}catch(e){} } });
+  if(sim){
+    let along=0; const v=100/3.6; const lat0=route.poly[0][1];
+    drive.timer=setInterval(()=>{ along+=v*1; if(along>route.total+500){ stopDrive('도착'); return; } onProgress(along, 100); },1000);
+    log('가상 100km/h 로 경로를 따라 이동');
+  }else{
+    drive.watchId=navigator.geolocation.watchPosition(g=>{
+      const p=[g.coords.longitude,g.coords.latitude]; const lat0=route.poly[0][1];
+      const pr=project(route.poly,route.cum,p,lat0);
+      drive.lastFix=Date.now();
+      if(pr.d>250){ drive.offCount++; $('d-banner').hidden=false; $('d-banner').className='banner bad'; $('d-banner').textContent=`경로에서 ${Math.round(pr.d)}m 벗어남`; if(drive.offCount>=6) reroute(p); return; }
+      drive.offCount=0; $('d-banner').hidden=true;
+      onProgress(pr.along, g.coords.speed!=null? g.coords.speed*3.6 : null);
+    }, e=>{ $('d-banner').hidden=false; $('d-banner').className='banner bad'; $('d-banner').textContent='GPS 오류: '+e.message; }, {enableHighAccuracy:true,maximumAge:1000,timeout:20000});
+  }
+}
+let rerouting=false;
+async function reroute(p){
+  if(rerouting||drive.sim) return; rerouting=true; log('경로 재탐색');
+  try{ const gj=await tmapRoute({lon:p[0],lat:p[1]},dest); route=buildRoute(gj); ics=classifyICs(route,IC); drive.announced.clear(); drive.offCount=0; speak('경로를 다시 찾았습니다'); }
+  catch(e){ log('재탐색 실패 '+e.message); } finally{ setTimeout(()=>rerouting=false,30000); }
+}
+function onProgress(along, speedKmh){
+  drive.prog=along;
+  if(speedKmh!=null) $('d-speed').textContent=Math.round(speedKmh);
+  $('d-prog').textContent=(along/1000).toFixed(1);
+  const targets=ics.filter(i=>i.kind==='pass');
+  const next=targets.find(i=>i.along>along-300);
+  const remain=targets.filter(i=>i.along>along-300 && !drive.announced.has(i.name)).length;
+  $('d-remain').textContent=remain;
+  if(!next){ $('d-icname').textContent='남은 합류 지점 없음'; $('d-dist').textContent='—'; $('d-distunit').textContent=''; $('d-cctv').hidden=true; return; }
+  const gap=next.along-along; const [n,u]=fmtDist(gap);
+  $('d-icname').textContent=next.name; $('d-dist').textContent=n; $('d-distunit').textContent=u;
+  // CCTV: 5km 전부터 가장 가까운 카메라 표시
+  if(gap<5000 && drive.cctvFor!==next.name){ drive.cctvFor=next.name; showCCTV(next); }
+  // 안내: 설정 거리 전
+  if(gap<=pref.dist && gap>200 && !drive.announced.has(next.name)){
+    drive.announced.add(next.name);
+    const text=pref.phrase.replace('{IC}', next.name.replace(/JCT$/,' 분기점').replace(/IC$/,' 나들목'));
+    speak(text); $('d-alert').textContent=text; $('d-alert').hidden=false; log('안내: '+next.name);
+    setTimeout(()=>{ if(drive) $('d-alert').hidden=true; }, 25000);
+  }
+}
+async function showCCTV(ic){
+  if(!keys.its){ return; }
+  clearInterval(drive.cctvTimer);
+  const load=async()=>{
+    try{
+      const cams=await itsCCTV(ic.lon,ic.lat);
+      if(!cams.length){ $('d-cctv').hidden=true; log('CCTV 없음: '+ic.name); return; }
+      const c=cams[0]; let url=c.url.replace(/^http:\/\//,'https://');
+      const img=$('d-img'); img.onerror=()=>{ $('d-cap').textContent=`영상 로드 실패 (${c.name})`; };
+      img.src=url+(url.includes('?')?'&':'?')+'t='+Date.now();
+      $('d-cap').textContent=`${c.name} · IC에서 ${Math.round(c.d)}m`; $('d-cctv').hidden=false;
+    }catch(e){ log('CCTV 오류 '+e.message); }
+  };
+  await load(); drive.cctvTimer=setInterval(load, 20000);
+}
+function stopDrive(reason){
+  if(!drive) return;
+  if(drive.watchId!=null) navigator.geolocation.clearWatch(drive.watchId);
+  clearInterval(drive.timer); clearInterval(drive.cctvTimer);
+  try{ drive.wake?.release(); }catch(e){}
+  speechSynthesis?.cancel(); if(reason) speak(reason==='도착'?'목적지 부근입니다. 안내를 종료합니다':'안내를 종료합니다');
+  drive=null; show('v-route');
+}
+$('b-drive').onclick=()=>startDrive(false);
+$('b-sim').onclick=()=>startDrive(true);
+$('b-stop').onclick=()=>stopDrive('');
+
+/* ===================== 시작 ===================== */
+show(keys.tmap&&keys.its ? 'v-home' : 'v-setup');
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+</script>
+</body>
+</html>
