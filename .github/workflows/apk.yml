@@ -1,0 +1,56 @@
+name: build-apk
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.7' }
+      - name: assemble project
+        run: |
+          set -e
+          P=android; J=$P/app/src/main/java/kr/lane/guide
+          mkdir -p $J
+          cp MainActivity.java GuideService.java $J/
+          cp AndroidManifest.xml $P/app/src/main/
+          cp debug.keystore $P/app/
+          cat > $P/settings.gradle <<'G'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "laneguide"
+          include ":app"
+          G
+          cat > $P/build.gradle <<'G'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          G
+          cat > $P/gradle.properties <<'G'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          G
+          cat > $P/app/build.gradle <<'G'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'kr.lane.guide'
+            compileSdk 34
+            defaultConfig { applicationId 'kr.lane.guide'; minSdk 26; targetSdk 34; versionCode Integer.parseInt(System.getenv('VC') ?: '1'); versionName '1.' + (System.getenv('VC') ?: '1') }
+            signingConfigs { fixed { storeFile file('debug.keystore'); storePassword 'android'; keyAlias 'androiddebugkey'; keyPassword 'android' } }
+            buildTypes { debug { signingConfig signingConfigs.fixed } }
+            compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          G
+      - name: build
+        env: { VC: '${{ github.run_number }}' }
+        run: cd android && gradle --no-daemon assembleDebug
+      - name: release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk lane-guide.apk
+          gh release create "v${{ github.run_number }}" lane-guide.apk --title "합류안내 v${{ github.run_number }}" --notes "자동 빌드" --latest
