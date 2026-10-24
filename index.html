@@ -51,7 +51,7 @@ input{font:inherit;color:var(--fg);background:#0e1419;border:1px solid var(--lin
 .big small{font-size:.38em;font-weight:600;color:var(--muted);margin-left:6px}
 .icname{font-size:clamp(22px,7vw,34px);font-weight:700}
 .cctv{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3;max-width:100%;border:1px solid var(--line)}
-.cctv img{width:100%;height:100%;object-fit:contain;display:block}
+.cctv video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .cctv .cap{position:absolute;left:0;right:0;bottom:0;padding:8px 12px;font-size:13px;background:rgba(0,0,0,.6);color:#fff}
 .stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .stat div{background:#0e1419;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
@@ -139,7 +139,7 @@ label.chk input{width:auto;flex:0 0 auto}
     <div class="icname" id="d-icname">—</div>
     <div class="big"><span id="d-dist">—</span><small id="d-distunit"></small></div>
   </div>
-  <div class="cctv" id="d-cctv" hidden><img id="d-img" alt="합류부 CCTV"><div class="cap" id="d-cap"></div></div>
+  <div class="cctv" id="d-cctv" hidden><video id="d-img" muted playsinline autoplay></video><div class="cap" id="d-cap"></div></div>
   <div class="stat">
     <div><b id="d-speed">0</b><span>km/h</span></div>
     <div><b id="d-prog">0.0</b><span>진행 km</span></div>
@@ -250,8 +250,8 @@ async function tmapRoute(s, e){
     body:JSON.stringify({startX:String(s.lon),startY:String(s.lat),endX:String(e.lon),endY:String(e.lat),reqCoordType:'WGS84GEO',resCoordType:'WGS84GEO',searchOption:'0'})});
   if(!r.ok) throw new Error('경로 '+r.status); return r.json();
 }
-async function itsCCTV(lon, lat, box=0.015){
-  const u=`https://openapi.its.go.kr:9443/cctvInfo?apiKey=${encodeURIComponent(keys.its)}&type=ex&cctvType=3&minX=${lon-box}&maxX=${lon+box}&minY=${lat-box}&maxY=${lat+box}&getType=json`;
+async function itsCCTV(lon, lat, box=0.015, ctype='4'){
+  const u=`https://openapi.its.go.kr:9443/cctvInfo?apiKey=${encodeURIComponent(keys.its)}&type=ex&cctvType=${ctype}&minX=${lon-box}&maxX=${lon+box}&minY=${lat-box}&maxY=${lat+box}&getType=json`;
   const r=await fetch(u); if(!r.ok) throw new Error('CCTV '+r.status);
   const j=await r.json(); let d=j?.response?.data||[]; if(!Array.isArray(d)) d=[d];
   return d.map(c=>({name:String(c.cctvname||'').replace(/;$/,''), url:String(c.cctvurl||''), lon:+String(c.coordx).replace(/;/g,''), lat:+String(c.coordy).replace(/;/g,'')}))
@@ -416,18 +416,21 @@ async function showCCTV(ic){
     try{
       const cams=await itsCCTV(ic.lon,ic.lat);
       if(!cams.length){ $('d-cctv').hidden=true; log('CCTV 없음: '+ic.name); return; }
-      const c=cams[0]; let url=c.url.replace(/^http:\/\//,'https://');
-      const img=$('d-img'); img.onerror=()=>{ $('d-cap').textContent=`영상 로드 실패 (${c.name})`; };
-      img.src=url+(url.includes('?')?'&':'?')+'t='+Date.now();
+      const c=cams[0];
+      const v=$('d-img');
+      v.onerror=async()=>{ // HLS 실패 시 MP4(30초 클립)로 대체
+        try{ const m=(await itsCCTV(ic.lon,ic.lat,0.015,'5'))[0]; if(m){ v.onerror=()=>{$('d-cap').textContent=`영상 로드 실패 (${c.name})`;}; v.src=m.url; v.loop=true; v.play().catch(()=>{}); } }catch(e){ $('d-cap').textContent=`영상 로드 실패 (${c.name})`; }
+      };
+      if(v.dataset.src!==c.url){ v.dataset.src=c.url; v.src=c.url; v.play().catch(()=>{}); }
       $('d-cap').textContent=`${c.name} · IC에서 ${Math.round(c.d)}m`; $('d-cctv').hidden=false;
     }catch(e){ log('CCTV 오류 '+e.message); }
   };
-  await load(); drive.cctvTimer=setInterval(load, 20000);
+  await load();
 }
 function stopDrive(reason){
   if(!drive) return;
   if(drive.watchId!=null) navigator.geolocation.clearWatch(drive.watchId);
-  clearInterval(drive.timer); clearInterval(drive.cctvTimer);
+  clearInterval(drive.timer); clearInterval(drive.cctvTimer); const vv=$('d-img'); vv.pause(); vv.removeAttribute('src'); vv.dataset.src=''; vv.load();
   try{ drive.wake?.release(); }catch(e){}
   speechSynthesis?.cancel(); if(reason) speak(reason==='도착'?'목적지 부근입니다. 안내를 종료합니다':'안내를 종료합니다');
   drive=null; show('v-route');
