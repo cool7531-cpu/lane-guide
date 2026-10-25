@@ -7,6 +7,9 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.speech.RecognizerIntent;
+import android.content.ActivityNotFoundException;
+import org.json.JSONObject;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -83,6 +86,20 @@ public class MainActivity extends Activity {
         if (pendingGeo != null) { pendingGeo.invoke(pendingOrigin, hasLocation(), false); pendingGeo = null; }
     }
 
+    static final int REQ_VOICE = 42;
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_VOICE) return;
+        String text = "";
+        if (res == RESULT_OK && data != null) {
+            ArrayList<String> r = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (r != null && !r.isEmpty()) text = r.get(0);
+        }
+        web.evaluateJavascript("window.onVoiceResult&&window.onVoiceResult(" + JSONObject.quote(text) + ")", null);
+    }
+
     @Override
     public void onBackPressed() { moveTaskToBack(true); }
 
@@ -99,6 +116,19 @@ public class MainActivity extends Activity {
             GuideService.pending = json;
             Intent i = new Intent(MainActivity.this, GuideService.class).setAction(GuideService.ACTION_START);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+        }
+
+        @JavascriptInterface public void voiceSearch() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+                        .putExtra(RecognizerIntent.EXTRA_PROMPT, "목적지를 말하세요");
+                try { startActivityForResult(i, REQ_VOICE); }
+                catch (ActivityNotFoundException e) {
+                    web.evaluateJavascript("window.onVoiceResult&&window.onVoiceResult(null)", null);
+                }
+            });
         }
 
         @JavascriptInterface public void stopGuide() {

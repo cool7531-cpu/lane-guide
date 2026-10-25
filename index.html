@@ -101,7 +101,7 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
 <section id="v-home" class="view">
   <div class="topbar"><h1>어디로 갈까요</h1><button id="b-tosetup">설정</button></div>
   <div class="card">
-    <div class="row"><input id="q" class="grow" placeholder="목적지 검색 (예: 수원역, 부산역)" enterkeyhint="search"><button id="b-search">검색</button></div>
+    <div class="row"><input id="q" class="grow" placeholder="목적지 검색 (예: 수원역, 부산역)" enterkeyhint="search"><button id="b-mic" title="말로 검색" hidden>🎤 말하기</button><button id="b-search">검색</button></div>
     <div id="results" class="list"></div>
   </div>
   <div class="card">
@@ -338,6 +338,12 @@ async function doSearch(inputId, resId, onPick, withStar){
   try{ renderResults($(resId), await tmapPOI(q), onPick, withStar); }catch(e){ $(resId).innerHTML=`<div class="muted">검색 실패: ${e.message}</div>`; }
 }
 $('b-search').onclick=()=>doSearch('q','results',chooseDest,true);
+if(NATIVE && Android.voiceSearch){ $('b-mic').hidden=false; $('b-mic').onclick=()=>{ try{ Android.voiceSearch(); }catch(e){} }; }
+window.onVoiceResult=t=>{
+  if(t===null){ $('results').innerHTML='<div class="muted">이 폰에서 음성인식을 쓸 수 없습니다 (구글 앱 필요)</div>'; return; }
+  if(!t) return;
+  $('q').value=t; doSearch('q','results',chooseDest,true);
+};
 $('q').addEventListener('keydown',e=>{ if(e.key==='Enter') $('b-search').click(); });
 $('b-search-start').onclick=()=>doSearch('q-start','results-start',p=>{ startPt=p; $('start-gps').checked=false; $('start-label').textContent='출발: '+p.name; $('results-start').innerHTML=''; },false);
 $('q-start').addEventListener('keydown',e=>{ if(e.key==='Enter') $('b-search-start').click(); });
