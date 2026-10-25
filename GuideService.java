@@ -35,6 +35,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     static final String CH = "guide";
     static final int NID = 7;
     static volatile String pending;
+    static final String ACTION_FREE = "free";
+    private boolean free; private double[][] allIc; private String[] allIcName;
+    private final Map<String, Long> freeDone = new HashMap<>(); private final Set<String> freeReq = new HashSet<>();
+    private final Map<String, Boolean> freeDec = new java.util.concurrent.ConcurrentHashMap<>();
 
     private double[][] poly; private double[] cum;
     private String[] tName; private double[] tAlong;
@@ -53,9 +57,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopAll(); return START_NOT_STICKY; }
         startFg("안내 준비 중");
-        try { load(pending); } catch (Exception e) { update("경로 데이터 오류"); }
+        free = intent != null && ACTION_FREE.equals(intent.getAction());
+        try { if (free) loadFree(pending); else load(pending); } catch (Exception e) { update("데이터 오류"); }
         if (tts == null) tts = new TextToSpeech(this, this);
-        say("백그라운드 안내를 시작합니다");
+        say(free ? "목적지 없이 정체 안내를 시작합니다" : "백그라운드 안내를 시작합니다");
         startGps();
         return START_STICKY;
     }
@@ -79,6 +84,56 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         announced.clear();
     }
 
+    private void loadFree(String json) throws Exception {
+        JSONObject o = new JSONObject(json);
+        JSONArray a = o.getJSONArray("ics");
+        allIc = new double[a.length()][2]; allIcName = new String[a.length()];
+        for (int i = 0; i < a.length(); i++) { JSONArray q = a.getJSONArray(i); allIcName[i] = q.getString(0); allIc[i][0] = q.getDouble(1); allIc[i][1] = q.getDouble(2); }
+        tmapKey = o.optString("tmapKey", ""); distM = o.optDouble("dist", 2000); phrase = o.optString("phrase", phrase);
+        freeDone.clear(); freeReq.clear(); freeDec.clear(); poly = null;
+    }
+
+    private static double hav(double lon1, double lat1, double lon2, double lat2) {
+        double k = Math.PI / 180, dLat = (lat2 - lat1) * k, dLon = (lon2 - lon1) * k;
+        double h = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * k) * Math.cos(lat2 * k) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 2 * 6371000 * Math.asin(Math.sqrt(h));
+    }
+    private static double[] offset(double[] p, double brg, double m) {
+        double k = Math.PI / 180;
+        return new double[]{p[0] + m * Math.sin(brg * k) / (111320 * Math.cos(p[1] * k)), p[1] + m * Math.cos(brg * k) / 110540};
+    }
+
+    /** 목적지 없는 모드: 진행 방향 앞쪽 IC를 찾아 혼잡하면 안내 */
+    private void onFree(Location loc) {
+        double kmh = loc.hasSpeed() ? loc.getSpeed() * 3.6 : 0;
+        if (kmh < 50 || !loc.hasBearing()) { update(String.format(Locale.KOREA, "대기 중 (%.0fkm/h, 50km/h 이상에서 동작)", kmh)); return; }
+        double[] me = {loc.getLongitude(), loc.getLatitude()}; double hd = loc.getBearing();
+        int best = -1; double bestD = 1e9;
+        for (int i = 0; i < allIc.length; i++) {
+            double d = hav(me[0], me[1], allIc[i][0], allIc[i][1]);
+            if (d > 3500 || d < 150) continue;
+            if (angDiff(bearing(me, allIc[i]), hd) > 25) continue;
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        long now = System.currentTimeMillis();
+        if (best < 0) { update(String.format(Locale.KOREA, "주행 중 %.0fkm/h · 앞쪽 합류 지점 없음", kmh)); return; }
+        final String key = allIcName[best]; Long done = freeDone.get(key);
+        if (done != null && now - done < 15 * 60 * 1000) { update(key + " 통과 중"); return; }
+        if (bestD <= distM + 800 && !freeReq.contains(key)) {
+            freeReq.add(key);
+            final double[] ic = allIc[best];
+            // 현재 위치 → IC → IC 너머 500m 를 임시 경로로 보고 판정
+            final double[][] pl = {me, ic, offset(ic, bearing(me, ic), 500)};
+            new Thread(() -> freeDec.put(key, judgeOn(pl, ic))).start();
+        }
+        Boolean dec = freeDec.get(key);
+        update(String.format(Locale.KOREA, "%s %.1fkm 앞%s", key, bestD / 1000, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활"));
+        if (bestD <= distM && dec != null) {
+            freeDone.put(key, now); freeReq.remove(key); freeDec.remove(key);
+            if (dec) say(phrase.replace("{IC}", key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목")));
+        }
+    }
+
     private void startGps() {
         if (lm != null) return;
         lm = (LocationManager) getSystemService(LOCATION_SERVICE);
@@ -89,6 +144,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
 
     @Override
     public void onLocationChanged(Location loc) {
+        if (free) { onFree(loc); return; }
         if (poly == null || poly.length < 2) return;
         double[] pr = project(loc.getLongitude(), loc.getLatitude());
         if (pr[0] > 250) { update(String.format(Locale.KOREA, "경로에서 %.0fm 벗어남", pr[0])); return; }
@@ -113,11 +169,22 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     @Override public void onProviderDisabled(String p) { update("GPS 꺼짐"); }
 
     /** 티맵 실시간 교통정보로 합류부 혼잡 판정 — 웹앱 checkMerge()와 같은 규칙 */
-    private void judge(int i) {
+    private void judge(int i) { decision.put(i, judgeOn(null, tGeo[i], tAlong[i])); }
+
+    private boolean judgeOn(double[][] pl, double[] icPt) {
+        double[] cm = new double[pl.length];
+        for (int k = 1; k < pl.length; k++) cm[k] = cm[k - 1] + hav(pl[k - 1][0], pl[k - 1][1], pl[k][0], pl[k][1]);
+        return judgeOn(new Object[]{pl, cm}, icPt, cm[1]);
+    }
+
+    /** route==null 이면 현재 경로(poly,cum) 사용 */
+    private boolean judgeOn(Object[] route, double[] icPt, double icA) {
+        final double[][] P = route == null ? poly : (double[][]) route[0];
+        final double[] C = route == null ? cum : (double[]) route[1];
         boolean ann = true;
         try {
             String u = "https://apis.openapi.sk.com/tmap/traffic?version=1&format=json&reqCoordType=WGS84GEO&resCoordType=WGS84GEO&trafficType=AUTO&zoomLevel=16"
-                    + "&centerLat=" + tGeo[i][1] + "&centerLon=" + tGeo[i][0];
+                    + "&centerLat=" + icPt[1] + "&centerLon=" + icPt[0];
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
             c.setRequestProperty("appKey", tmapKey); c.setRequestProperty("accept", "application/json");
             c.setConnectTimeout(8000); c.setReadTimeout(15000);
@@ -125,16 +192,16 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             InputStream in = c.getInputStream(); ByteArrayOutputStream bo = new ByteArrayOutputStream();
             byte[] buf = new byte[16384]; int n; while ((n = in.read(buf)) > 0) bo.write(buf, 0, n); in.close();
             JSONArray fs = new JSONObject(bo.toString("UTF-8")).optJSONArray("features");
-            int main = 0, ramp = 0, nMain = 0, nRamp = 0; double icA = tAlong[i];
+            int main = 0, ramp = 0, nMain = 0, nRamp = 0;
             for (int k = 0; fs != null && k < fs.length(); k++) {
                 JSONObject f = fs.getJSONObject(k), geo = f.getJSONObject("geometry"), p = f.getJSONObject("properties");
                 if (!"LineString".equals(geo.optString("type"))) continue;
                 JSONArray cs = geo.getJSONArray("coordinates"); int m = cs.length(); if (m < 2) continue;
                 double[] a = pt(cs, 0), b = pt(cs, m - 1), b2 = pt(cs, m - 2);
                 int cong = p.optInt("congestion", 0);
-                double[] s = projectSeg(a[0], a[1]), e = projectSeg(b[0], b[1]);
-                int sg = (int) Math.min(e[2], poly.length - 2);
-                double rb = bearing(poly[sg], poly[sg + 1]);
+                double[] s = projectSeg(P, C, a[0], a[1]), e = projectSeg(P, C, b[0], b[1]);
+                int sg = (int) Math.min(e[2], P.length - 2);
+                double rb = bearing(P[sg], P[sg + 1]);
                 if ("001".equals(p.optString("roadType")) && s[0] < 40 && e[0] < 40) {
                     if (angDiff(bearing(a, b), rb) > 60 || e[1] < s[1]) continue;
                     if (e[1] < icA - 1500 || s[1] > icA + 300) continue;
@@ -145,7 +212,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             }
             if (nMain + nRamp > 0) ann = main >= 2 || ramp >= 2;
         } catch (Exception ex) { ann = true; }
-        decision.put(i, ann);
+        return ann;
     }
 
     private static double[] pt(JSONArray cs, int i) throws Exception { JSONArray q = cs.getJSONArray(i); return new double[]{q.getDouble(0), q.getDouble(1)}; }
@@ -157,10 +224,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     private static double angDiff(double a, double b) { double d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
 
     /** 반환 {수직거리m, 누적거리m} — 웹앱 project()와 같은 계산 */
-    private double[] project(double lon, double lat) { double[] r = projectSeg(lon, lat); return new double[]{r[0], r[1]}; }
+    private double[] project(double lon, double lat) { double[] r = projectSeg(poly, cum, lon, lat); return new double[]{r[0], r[1]}; }
 
     /** {수직거리, 누적거리, 세그먼트} */
-    private double[] projectSeg(double lon, double lat) {
+    private static double[] projectSeg(double[][] poly, double[] cum, double lon, double lat) {
         final double R = 6371000, k = Math.PI / 180, lat0 = poly[0][1];
         final double cx = k * R * Math.cos(lat0 * k), cy = k * R;
         double px = lon * cx, py = lat * cy, bestD = Double.MAX_VALUE, bestA = 0; int bestS = 0;

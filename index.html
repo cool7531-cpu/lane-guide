@@ -88,6 +88,7 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
     <h2>안내 설정</h2>
     <label>안내 거리 (m)<input id="s-dist" type="number" inputmode="numeric" value="2000" min="500" max="5000" step="100"></label>
     <label>안내 문구 ({IC} 자리에 IC 이름이 들어감)<input id="s-phrase" value="{IC} 진입 차량 많은 구간입니다. 왼쪽 차로로 이동하세요."></label>
+    <label class="chk"><input id="s-autofree" type="checkbox" checked> 앱 켜면 목적지 없이 정체 안내 자동 시작</label>
     <div class="row"><button id="b-testtts" class="grow">음성 테스트</button><button id="b-savepref" class="grow">저장</button></div>
   </div>
   <div class="card">
@@ -99,7 +100,11 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
 
 <!-- ============ 목적지 ============ -->
 <section id="v-home" class="view">
-  <div class="topbar"><h1>어디로 갈까요</h1><button id="b-tosetup">설정</button></div>
+  <div class="topbar"><h1>합류 차로 안내</h1><button id="b-tosetup">설정</button></div>
+  <div class="card" id="free-card" hidden>
+    <div class="row" style="justify-content:space-between"><div><div style="font-weight:700" id="free-state">목적지 없이 정체 안내 켜짐</div><div class="muted">티맵만 켜고 운전하세요. 앞쪽 IC 합류부가 혼잡할 때만 말합니다 (50km/h 이상).</div></div><button id="b-free">끄기</button></div>
+  </div>
+  <h2 style="margin-top:4px">목적지 안내 (선택)</h2>
   <div class="card">
     <div class="row"><input id="q" class="grow" placeholder="목적지 검색 (예: 수원역, 부산역)" enterkeyhint="search"><button id="b-mic" title="말로 검색" hidden>🎤 말하기</button><button id="b-search">검색</button></div>
     <div id="results" class="list"></div>
@@ -297,6 +302,10 @@ async function checkMerge(rt, ic){
 /* ===================== 네이티브(APK) ===================== */
 const NATIVE = (()=>{ try{ return !!(window.Android && Android.isNative && Android.isNative()); }catch(e){ return false; } })();
 const spokenName = n => n.replace(/JCT$/,' 분기점').replace(/IC$/,' 나들목');
+let freeOn=false;
+function freeStart(){ if(!NATIVE||!keys.tmap) return; try{ Android.startFree(JSON.stringify({ics:IC.map(r=>[r[0],r[1],r[2]]),tmapKey:keys.tmap,dist:pref.dist,phrase:pref.phrase})); freeOn=true; }catch(e){} renderFree(); }
+function freeStop(){ if(!NATIVE) return; try{ Android.stopGuide(); }catch(e){} freeOn=false; renderFree(); }
+function renderFree(){ const c=document.getElementById('free-card'); if(!c) return; c.hidden=!NATIVE; document.getElementById('free-state').textContent=freeOn?'목적지 없이 정체 안내 켜짐':'정체 안내 꺼짐'; document.getElementById('b-free').textContent=freeOn?'끄기':'켜기'; }
 function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat])})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
 
 /* ===================== 음성 ===================== */
@@ -330,7 +339,7 @@ $('b-savekeys').onclick=async()=>{
   st.textContent=res.join(' / ');
 };
 $('b-testtts').onclick=()=>speak(($('s-phrase').value||pref.phrase).replace('{IC}','서울주 분기점'));
-$('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
+$('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; pref.autoFree=$('s-autofree').checked; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
 $('b-tohome').onclick=()=>show('v-home');
 $('b-tosetup').onclick=()=>show('v-setup');
 
@@ -411,7 +420,7 @@ async function startDrive(sim){
   $('d-dest').textContent=dest.name; $('d-log').textContent=''; $('d-alert').hidden=true; $('d-banner').hidden=true; $('d-cctv').hidden=true;
   $('d-remain').textContent=targets.length;
   show('v-drive');
-  if(!sim && NATIVE){ drive.native=true; nativeStart(); log('백그라운드 안내 켜짐 (화면 꺼도 동작)'); }
+  if(!sim && NATIVE){ drive.native=true; freeOn=false; nativeStart(); log('백그라운드 안내 켜짐 (화면 꺼도 동작)'); }
   else speak(sim?'시험 주행을 시작합니다':'안내를 시작합니다');
   try{ drive.wake=await navigator.wakeLock?.request('screen'); }catch(e){}
   document.addEventListener('visibilitychange',async()=>{ if(document.visibilityState==='visible'&&drive&&!drive.wake){ try{drive.wake=await navigator.wakeLock?.request('screen');}catch(e){} } });
@@ -491,9 +500,11 @@ function stopDrive(reason){
   if(drive.watchId!=null) navigator.geolocation.clearWatch(drive.watchId);
   clearInterval(drive.timer); clearInterval(drive.cctvTimer); const vv=$('d-img'); vv.pause(); vv.removeAttribute('src'); vv.dataset.src=''; vv.load();
   try{ drive.wake?.release(); }catch(e){}
-  if(drive.native){ try{ Android.stopGuide(); }catch(e){} }
+  const wasNative=drive.native;
+  if(wasNative){ try{ Android.stopGuide(); }catch(e){} freeOn=false; }
   speechSynthesis?.cancel(); if(reason) speak(reason==='도착'?'목적지 부근입니다. 안내를 종료합니다':'안내를 종료합니다');
   drive=null; show('v-route');
+  if(wasNative && pref.autoFree!==false) setTimeout(freeStart, 1500);
 }
 let simX=+store.get('simX',10)||10;
 function markSpd(){ document.querySelectorAll('button.spd').forEach(b=>b.classList.toggle('on', +b.dataset.x===simX)); }
@@ -521,6 +532,9 @@ function importKeysFromHash(){
 }
 importKeysFromHash();
 window.addEventListener('hashchange', importKeysFromHash);
+$('s-autofree').checked = pref.autoFree!==false;
+$('b-free').onclick=()=> freeOn? freeStop() : freeStart();
+if(NATIVE && keys.tmap && pref.autoFree!==false) freeStart(); else renderFree();
 show(keys.tmap&&keys.its ? 'v-home' : 'v-setup');
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 </script>

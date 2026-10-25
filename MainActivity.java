@@ -131,6 +131,12 @@ public class MainActivity extends Activity {
             });
         }
 
+        @JavascriptInterface public void startFree(String json) {
+            GuideService.pending = json;
+            Intent i = new Intent(MainActivity.this, GuideService.class).setAction(GuideService.ACTION_FREE);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+        }
+
         @JavascriptInterface public void stopGuide() {
             Intent i = new Intent(MainActivity.this, GuideService.class).setAction(GuideService.ACTION_STOP);
             startService(i);
