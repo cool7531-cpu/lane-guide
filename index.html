@@ -89,6 +89,7 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
     <label>안내 거리 (m)<input id="s-dist" type="number" inputmode="numeric" value="2000" min="500" max="5000" step="100"></label>
     <label>안내 문구 ({IC} 자리에 IC 이름이 들어감)<input id="s-phrase" value="{IC} 진입 차량 많은 구간입니다. 왼쪽 차로로 이동하세요."></label>
     <label class="chk"><input id="s-autofree" type="checkbox" checked> 앱 켜면 목적지 없이 정체 안내 자동 시작</label>
+    <label class="chk"><input id="s-sayclear" type="checkbox" checked> 원활할 때도 짧게 알림 ("OO 나들목 합류 원활")</label>
     <div class="row"><button id="b-testtts" class="grow">음성 테스트</button><button id="b-savepref" class="grow">저장</button></div>
   </div>
   <div class="card">
@@ -304,10 +305,10 @@ async function checkMerge(rt, ic){
 const NATIVE = (()=>{ try{ return !!(window.Android && Android.isNative && Android.isNative()); }catch(e){ return false; } })();
 const spokenName = n => n.replace(/JCT$/,' 분기점').replace(/IC$/,' 나들목');
 let freeOn=false;
-function freeStart(){ if(!NATIVE||!keys.tmap) return; try{ Android.startFree(JSON.stringify({ics:IC.map(r=>[r[0],r[1],r[2]]),tmapKey:keys.tmap,dist:pref.dist,phrase:pref.phrase})); freeOn=true; }catch(e){} renderFree(); }
+function freeStart(){ if(!NATIVE||!keys.tmap) return; try{ Android.startFree(JSON.stringify({ics:IC.map(r=>[r[0],r[1],r[2]]),tmapKey:keys.tmap,dist:pref.dist,phrase:pref.phrase,sayClear:pref.sayClear!==false})); freeOn=true; }catch(e){} renderFree(); }
 function freeStop(){ if(!NATIVE) return; try{ Android.stopGuide(); }catch(e){} freeOn=false; renderFree(); }
 function renderFree(){ const c=document.getElementById('free-card'); if(!c) return; c.hidden=!NATIVE; document.getElementById('free-state').textContent=freeOn?'목적지 없이 정체 안내 켜짐':'정체 안내 꺼짐'; document.getElementById('b-free').textContent=freeOn?'끄기':'켜기'; }
-function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat]),ics:IC.map(r=>[r[0],r[1],r[2]])})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
+function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat]),ics:IC.map(r=>[r[0],r[1],r[2]]),sayClear:pref.sayClear!==false})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
 
 /* ===================== 음성 ===================== */
 let voice=null;
@@ -340,7 +341,7 @@ $('b-savekeys').onclick=async()=>{
   st.textContent=res.join(' / ');
 };
 $('b-testtts').onclick=()=>speak(($('s-phrase').value||pref.phrase).replace('{IC}','서울주 분기점'));
-$('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; pref.autoFree=$('s-autofree').checked; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
+$('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; pref.autoFree=$('s-autofree').checked; pref.sayClear=$('s-sayclear').checked; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
 $('b-tohome').onclick=()=>show('v-home');
 $('b-tosetup').onclick=()=>show('v-setup');
 
@@ -473,7 +474,7 @@ function onProgress(along, speedKmh){
   // 안내: 설정 거리 전 (판정 결과가 아직 없으면 500m 더 기다렸다가 안내)
   if(gap<=pref.dist && gap>200 && !drive.announced.has(next.name) && (m || gap<pref.dist-500)){
     drive.announced.add(next.name);
-    if(m && !m.announce){ log(`${next.name} 생략 (원활)`); return; }
+    if(m && !m.announce){ log(`${next.name} 원활`); if(!drive.native && pref.sayClear!==false) speak(spokenName(next.name)+' 합류 원활'); return; }
     const text=pref.phrase.replace('{IC}', spokenName(next.name));
     if(!drive.native) speak(text); $('d-alert').textContent=text; $('d-alert').hidden=false; log('안내: '+next.name);
     setTimeout(()=>{ if(drive) $('d-alert').hidden=true; }, 25000);
@@ -534,6 +535,7 @@ function importKeysFromHash(){
 importKeysFromHash();
 window.addEventListener('hashchange', importKeysFromHash);
 $('s-autofree').checked = pref.autoFree!==false;
+$('s-sayclear').checked = pref.sayClear!==false;
 $('b-free').onclick=()=> freeOn? freeStop() : freeStart();
 try{ if(NATIVE && Android.isRunning) freeOn=!!Android.isRunning(); }catch(e){}
 const autoOk = NATIVE && (!Android.consumeAutoStart || Android.consumeAutoStart());

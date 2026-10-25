@@ -40,12 +40,14 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     static final String ACTION_FREE = "free";
     private boolean free; private double[][] allIc; private String[] allIcName;
     private final Map<String, Long> freeDone = new HashMap<>(); private final Set<String> freeReq = new HashSet<>();
-    private final Map<String, Boolean> freeDec = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Integer> freeDec = new java.util.concurrent.ConcurrentHashMap<>(); // 1=혼잡 0=원활 -1=고속도로 아님
+    private volatile int lastNMain;
     private double[] lastPt; private double lastHd = -1; private int offCount;
     private volatile boolean requireMain; // 목적지 없는 모드: 내 방향 고속도로 본선이 확인될 때만 안내
 
     private double[][] poly; private double[] cum;
     private String[] tName; private double[] tAlong;
+    private boolean sayClear = true;
     private double distM = 2000; private String phrase = "{IC} 진입 차량 많은 구간입니다. 왼쪽 차로로 이동하세요.";
     private final Set<Integer> announced = new HashSet<>();
     private final Map<Integer, Boolean> decision = new java.util.concurrent.ConcurrentHashMap<>(); // 없음=조회중
@@ -92,6 +94,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         }
         distM = o.optDouble("dist", 2000);
         phrase = o.optString("phrase", phrase);
+        sayClear = o.optBoolean("sayClear", true);
         announced.clear();
     }
 
@@ -100,7 +103,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         JSONArray a = o.getJSONArray("ics");
         allIc = new double[a.length()][2]; allIcName = new String[a.length()];
         for (int i = 0; i < a.length(); i++) { JSONArray q = a.getJSONArray(i); allIcName[i] = q.getString(0); allIc[i][0] = q.getDouble(1); allIc[i][1] = q.getDouble(2); }
-        tmapKey = o.optString("tmapKey", ""); distM = o.optDouble("dist", 2000); phrase = o.optString("phrase", phrase);
+        tmapKey = o.optString("tmapKey", ""); distM = o.optDouble("dist", 2000); phrase = o.optString("phrase", phrase); sayClear = o.optBoolean("sayClear", true);
         freeDone.clear(); freeReq.clear(); freeDec.clear(); poly = null; lastPt = null; lastHd = -1;
     }
 
@@ -140,13 +143,14 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             final double[] ic = allIc[best];
             // 현재 위치 → IC → IC 너머 500m 를 임시 경로로 보고 판정
             final double[][] pl = {me, ic, offset(ic, bearing(me, ic), 500)};
-            new Thread(() -> freeDec.put(key, judgeFree(pl, ic))).start();
+            new Thread(() -> { boolean a = judgeFree(pl, ic); freeDec.put(key, a ? 1 : (lastNMain > 0 ? 0 : -1)); }).start();
         }
-        Boolean dec = freeDec.get(key);
-        update(String.format(Locale.KOREA, "%s%s %.1fkm 앞 · %.0fkm/h%s", free ? "" : "[경로 이탈·진행방향 기준] ", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활/고속도로 아님"));
+        Integer dec = freeDec.get(key);
+        update(String.format(Locale.KOREA, "%s%s %.1fkm 앞 · %.0fkm/h%s", free ? "" : "[경로 이탈·진행방향 기준] ", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec == 1 ? " · 혼잡→안내" : dec == 0 ? " · 원활" : " · 고속도로 아님"));
         if (bestD <= distM && dec != null) {
             freeDone.put(key, now); freeReq.remove(key); freeDec.remove(key);
-            if (dec) say(phrase.replace("{IC}", key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목")));
+            String sp = key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목");
+            if (dec == 1) say(phrase.replace("{IC}", sp)); else if (dec == 0 && sayClear) say(sp + " 합류 원활");
         }
     }
 
@@ -182,7 +186,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         update(String.format(Locale.KOREA, "%s까지 %.1fkm%s", tName[next], gap / 1000, st));
         if (gap <= distM && gap > 200 && !announced.contains(next) && (dec != null || gap < distM - 500)) {
             announced.add(next);
-            if (dec != null && !dec) return;
+            if (dec != null && !dec) { if (sayClear) say(tName[next] + " 합류 원활"); return; }
             say(phrase.replace("{IC}", tName[next]));
         }
     }
@@ -234,9 +238,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
                     nRamp++; ramp = Math.max(ramp, cong);
                 }
             }
+            lastNMain = nMain;
             if (requireMain) ann = nMain > 0 && (main >= 2 || ramp >= 2); // 고속도로 본선 미확인이면 안내 안 함
             else if (nMain + nRamp > 0) ann = main >= 2 || ramp >= 2;
-        } catch (Exception ex) { ann = !requireMain; }
+        } catch (Exception ex) { ann = !requireMain; lastNMain = 0; }
         return ann;
     }
 
