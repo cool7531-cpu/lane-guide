@@ -307,7 +307,7 @@ let freeOn=false;
 function freeStart(){ if(!NATIVE||!keys.tmap) return; try{ Android.startFree(JSON.stringify({ics:IC.map(r=>[r[0],r[1],r[2]]),tmapKey:keys.tmap,dist:pref.dist,phrase:pref.phrase})); freeOn=true; }catch(e){} renderFree(); }
 function freeStop(){ if(!NATIVE) return; try{ Android.stopGuide(); }catch(e){} freeOn=false; renderFree(); }
 function renderFree(){ const c=document.getElementById('free-card'); if(!c) return; c.hidden=!NATIVE; document.getElementById('free-state').textContent=freeOn?'목적지 없이 정체 안내 켜짐':'정체 안내 꺼짐'; document.getElementById('b-free').textContent=freeOn?'끄기':'켜기'; }
-function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat])})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
+function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat]),ics:IC.map(r=>[r[0],r[1],r[2]])})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
 
 /* ===================== 음성 ===================== */
 let voice=null;

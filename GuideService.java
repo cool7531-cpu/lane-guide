@@ -41,7 +41,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     private boolean free; private double[][] allIc; private String[] allIcName;
     private final Map<String, Long> freeDone = new HashMap<>(); private final Set<String> freeReq = new HashSet<>();
     private final Map<String, Boolean> freeDec = new java.util.concurrent.ConcurrentHashMap<>();
-    private double[] lastPt; private double lastHd = -1;
+    private double[] lastPt; private double lastHd = -1; private int offCount;
     private volatile boolean requireMain; // 목적지 없는 모드: 내 방향 고속도로 본선이 확인될 때만 안내
 
     private double[][] poly; private double[] cum;
@@ -84,7 +84,12 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         tGeo = new double[tName.length][2];
         if (g != null) for (int i = 0; i < g.length() && i < tGeo.length; i++) { tGeo[i][0] = g.getJSONArray(i).getDouble(0); tGeo[i][1] = g.getJSONArray(i).getDouble(1); }
         tmapKey = o.optString("tmapKey", "");
-        decision.clear(); requested.clear();
+        decision.clear(); requested.clear(); offCount = 0; lastPt = null; lastHd = -1;
+        JSONArray ia = o.optJSONArray("ics");
+        if (ia != null) {
+            allIc = new double[ia.length()][2]; allIcName = new String[ia.length()];
+            for (int i = 0; i < ia.length(); i++) { JSONArray q = ia.getJSONArray(i); allIcName[i] = q.getString(0); allIc[i][0] = q.getDouble(1); allIc[i][1] = q.getDouble(2); }
+        }
         distM = o.optDouble("dist", 2000);
         phrase = o.optString("phrase", phrase);
         announced.clear();
@@ -138,7 +143,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             new Thread(() -> freeDec.put(key, judgeFree(pl, ic))).start();
         }
         Boolean dec = freeDec.get(key);
-        update(String.format(Locale.KOREA, "%s %.1fkm 앞 · %.0fkm/h%s", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활/고속도로 아님"));
+        update(String.format(Locale.KOREA, "%s%s %.1fkm 앞 · %.0fkm/h%s", free ? "" : "[경로 이탈·진행방향 기준] ", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활/고속도로 아님"));
         if (bestD <= distM && dec != null) {
             freeDone.put(key, now); freeReq.remove(key); freeDec.remove(key);
             if (dec) say(phrase.replace("{IC}", key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목")));
@@ -159,7 +164,12 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         if (free) { onFree(loc); return; }
         if (poly == null || poly.length < 2) return;
         double[] pr = project(loc.getLongitude(), loc.getLatitude());
-        if (pr[0] > 250) { update(String.format(Locale.KOREA, "경로에서 %.0fm 벗어남", pr[0])); return; }
+        if (pr[0] > 250) {
+            offCount++;
+            if (offCount >= 5 && allIc != null) { onFree(loc); return; } // 경로 이탈 → 실제 진행 방향 기준
+            update(String.format(Locale.KOREA, "경로에서 %.0fm 벗어남", pr[0])); return;
+        }
+        offCount = 0;
         double along = pr[1];
         int next = -1;
         for (int i = 0; i < tAlong.length; i++) if (tAlong[i] > along - 300) { next = i; break; }
