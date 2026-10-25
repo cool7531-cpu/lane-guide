@@ -150,6 +150,7 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
     <div class="icname" id="d-icname">—</div>
     <div class="big"><span id="d-dist">—</span><small id="d-distunit"></small></div>
   </div>
+  <button id="b-cctv" hidden>📷 다음 합류 지점 CCTV 보기</button>
   <div class="cctv" id="d-cctv" hidden><video id="d-img" muted playsinline autoplay></video><div class="cap" id="d-cap"></div></div>
   <div class="stat">
     <div><b id="d-speed">0</b><span>km/h</span></div>
@@ -458,7 +459,8 @@ function onProgress(along, speedKmh){
   const gap=next.along-along; const [n,u]=fmtDist(gap);
   $('d-icname').textContent=next.name; $('d-dist').textContent=n; $('d-distunit').textContent=u;
   // CCTV: 5km 전부터 가장 가까운 카메라 표시
-  if(gap<5000 && drive.cctvFor!==next.name){ drive.cctvFor=next.name; showCCTV(next); }
+  // CCTV: 호출 한도 절약을 위해 버튼을 눌렀을 때만 조회
+  if(gap<5000 && drive.cctvFor!==next.name){ drive.cctvFor=next.name; drive.cctvIc=next; $('d-cctv').hidden=true; $('b-cctv').hidden=!keys.its; }
   // 판정: 안내 거리 800m 전에 교통정보 조회 (IC당 1회)
   drive.merge=drive.merge||{};
   if(gap<=pref.dist+800 && !(next.name in drive.merge)){
@@ -486,12 +488,10 @@ async function showCCTV(ic){
       if(!cams.length){ $('d-cctv').hidden=true; log('CCTV 없음: '+ic.name); return; }
       const c=cams[0];
       const v=$('d-img');
-      v.onerror=async()=>{ // HLS 실패 시 MP4(30초 클립)로 대체
-        try{ const m=(await itsCCTV(ic.lon,ic.lat,0.015,'5'))[0]; if(m){ v.onerror=()=>{$('d-cap').textContent=`영상 로드 실패 (${c.name})`;}; v.src=m.url; v.loop=true; v.play().catch(()=>{}); } }catch(e){ $('d-cap').textContent=`영상 로드 실패 (${c.name})`; }
-      };
+      v.onerror=()=>{ $('d-cap').textContent=`영상 로드 실패 (${c.name})`; };
       if(v.dataset.src!==c.url){ v.dataset.src=c.url; v.src=c.url; v.play().catch(()=>{}); }
       $('d-cap').textContent=`${c.name} · IC에서 ${Math.round(c.d)}m`; $('d-cctv').hidden=false;
-    }catch(e){ log('CCTV 오류 '+e.message); }
+    }catch(e){ log('CCTV 오류 '+e.message); $('d-cctv').hidden=false; $('d-cap').textContent = /401/.test(e.message)? 'CCTV 월 호출 한도 초과 (안내는 정상 동작)' : 'CCTV 조회 실패'; }
   };
   await load();
 }
@@ -510,6 +510,7 @@ let simX=+store.get('simX',10)||10;
 function markSpd(){ document.querySelectorAll('button.spd').forEach(b=>b.classList.toggle('on', +b.dataset.x===simX)); }
 document.querySelectorAll('button.spd').forEach(b=>b.onclick=()=>{ simX=+b.dataset.x; store.set('simX',simX); markSpd(); if(drive&&drive.sim) log(`배속 ${simX}배`); });
 markSpd();
+$('b-cctv').onclick=()=>{ if(drive&&drive.cctvIc){ $('b-cctv').hidden=true; showCCTV(drive.cctvIc); } };
 $('b-drive').onclick=()=>{ $('d-spd').hidden=true; startDrive(false); };
 $('b-sim').onclick=()=>startDrive(true);
 $('b-stop').onclick=()=>stopDrive('');
