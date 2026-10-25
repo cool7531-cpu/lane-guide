@@ -459,7 +459,7 @@ $('b-sim').onclick=()=>startDrive(true);
 $('b-stop').onclick=()=>stopDrive('');
 
 /* ===================== 시작 ===================== */
-(function importKeysFromHash(){
+function importKeysFromHash(){
   const h=location.hash.slice(1); if(!h) return;
   const p=new URLSearchParams(h); let changed=false;
   if(p.get('tmap')){ keys.tmap=p.get('tmap').trim(); changed=true; }
@@ -472,7 +472,10 @@ $('b-stop').onclick=()=>stopDrive('');
     box.innerHTML='<div style="font-weight:700">키 저장됨</div><div class="muted">합류안내 앱(APK)을 설치했다면 아래 버튼을 눌러 앱에도 키를 넣으세요.</div><a class="primary" style="display:block;text-align:center;padding:14px;border-radius:10px;background:var(--accent);color:#1a1200;font-weight:700;text-decoration:none" href="intent://keys?'+q+'#Intent;scheme=lanegd;package=kr.lane.guide;end">앱에 키 넣고 열기</a><button id="kb-close">닫기</button>';
     document.body.appendChild(box); $('kb-close').onclick=()=>box.remove();
   }
-})();
+  if(changed && keys.tmap && keys.its && $('v-setup').classList.contains('active')) show('v-home');
+}
+importKeysFromHash();
+window.addEventListener('hashchange', importKeysFromHash);
 show(keys.tmap&&keys.its ? 'v-home' : 'v-setup');
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 </script>
