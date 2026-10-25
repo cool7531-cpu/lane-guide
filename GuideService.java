@@ -35,6 +35,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     static final String CH = "guide";
     static final int NID = 7;
     static volatile String pending;
+    static volatile boolean running;
+    private volatile boolean stopped;
     static final String ACTION_FREE = "free";
     private boolean free; private double[][] allIc; private String[] allIcName;
     private final Map<String, Long> freeDone = new HashMap<>(); private final Set<String> freeReq = new HashSet<>();
@@ -56,13 +58,15 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopAll(); return START_NOT_STICKY; }
+        if (intent == null) { stopAll(); return START_NOT_STICKY; } // 시스템 재시작 시 데이터 없음 → 종료
+        stopped = false; running = true;
         startFg("안내 준비 중");
         free = intent != null && ACTION_FREE.equals(intent.getAction());
         try { if (free) loadFree(pending); else load(pending); } catch (Exception e) { update("데이터 오류"); }
         if (tts == null) tts = new TextToSpeech(this, this);
         say(free ? "목적지 없이 정체 안내를 시작합니다" : "백그라운드 안내를 시작합니다");
         startGps();
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     private void load(String json) throws Exception {
@@ -144,6 +148,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
 
     @Override
     public void onLocationChanged(Location loc) {
+        if (stopped) return;
         if (free) { onFree(loc); return; }
         if (poly == null || poly.length < 2) return;
         double[] pr = project(loc.getLongitude(), loc.getLatitude());
@@ -252,6 +257,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     }
 
     private void say(String s) {
+        if (stopped) return;
         if (!ttsReady) { queued = s; return; }
         tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "g" + System.currentTimeMillis());
     }
@@ -276,17 +282,22 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     }
 
     private void update(String text) {
+        if (stopped) return;
         getSystemService(NotificationManager.class).notify(NID, build(text));
     }
 
     private void stopAll() {
+        stopped = true; running = false;
         if (lm != null) { lm.removeUpdates(this); lm = null; }
         if (tts != null) { tts.stop(); tts.shutdown(); tts = null; ttsReady = false; }
         stopForeground(true);
+        getSystemService(NotificationManager.class).cancel(NID);
         stopSelf();
     }
 
     @Override public void onDestroy() {
+        stopped = true; running = false;
+        getSystemService(NotificationManager.class).cancel(NID);
         if (lm != null) lm.removeUpdates(this);
         if (tts != null) tts.shutdown();
         super.onDestroy();

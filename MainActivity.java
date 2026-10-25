@@ -25,10 +25,13 @@ public class MainActivity extends Activity {
     private WebView web;
     private GeolocationPermissions.Callback pendingGeo;
     private String pendingOrigin;
+    static boolean autoStartPending; // 런처로 새로 켰을 때만 자동 시작
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Intent st = getIntent();
+        autoStartPending = b == null && st != null && Intent.ACTION_MAIN.equals(st.getAction());
         web = new WebView(this);
         setContentView(web);
         WebSettings s = web.getSettings();
@@ -111,6 +114,8 @@ public class MainActivity extends Activity {
 
     class Bridge {
         @JavascriptInterface public boolean isNative() { return true; }
+        @JavascriptInterface public boolean isRunning() { return GuideService.running; }
+        @JavascriptInterface public boolean consumeAutoStart() { boolean v = autoStartPending; autoStartPending = false; return v; }
 
         @JavascriptInterface public void startGuide(String json) {
             GuideService.pending = json;

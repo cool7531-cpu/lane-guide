@@ -534,7 +534,10 @@ importKeysFromHash();
 window.addEventListener('hashchange', importKeysFromHash);
 $('s-autofree').checked = pref.autoFree!==false;
 $('b-free').onclick=()=> freeOn? freeStop() : freeStart();
-if(NATIVE && keys.tmap && pref.autoFree!==false) freeStart(); else renderFree();
+try{ if(NATIVE && Android.isRunning) freeOn=!!Android.isRunning(); }catch(e){}
+const autoOk = NATIVE && (!Android.consumeAutoStart || Android.consumeAutoStart());
+if(NATIVE && keys.tmap && pref.autoFree!==false && autoOk && !freeOn) freeStart(); else renderFree();
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && NATIVE && Android.isRunning){ try{ freeOn=!!Android.isRunning() && !drive; }catch(e){} renderFree(); } });
 show(keys.tmap&&keys.its ? 'v-home' : 'v-setup');
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 </script>
