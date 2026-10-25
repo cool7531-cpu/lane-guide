@@ -265,10 +265,39 @@ async function itsCCTV(lon, lat, box=0.015, ctype='4'){
     .filter(c=>c.url && isFinite(c.lon)).map(c=>({...c, d:dist([c.lon,c.lat],[lon,lat])})).sort((a,b)=>a.d-b.d);
 }
 
+/* ===================== 합류부 혼잡 판정 (티맵 실시간 교통정보) ===================== */
+function bearing(a,b){ const k=Math.PI/180; const y=Math.sin((b[0]-a[0])*k)*Math.cos(b[1]*k); const x=Math.cos(a[1]*k)*Math.sin(b[1]*k)-Math.sin(a[1]*k)*Math.cos(b[1]*k)*Math.cos((b[0]-a[0])*k); return (Math.atan2(y,x)/k+360)%360; }
+function angDiff(a,b){ const d=Math.abs(a-b)%360; return d>180?360-d:d; }
+const CONG=['정보없음','원활','서행','지체','정체'];
+/** 반환 {announce, main, ramp, reason}. 본선(내 방향, IC 앞 1.5km~IC) 또는 합류 램프가 서행 이상이면 안내 */
+async function checkMerge(rt, ic){
+  const r=await fetch(`https://apis.openapi.sk.com/tmap/traffic?version=1&format=json&reqCoordType=WGS84GEO&resCoordType=WGS84GEO&trafficType=AUTO&centerLat=${ic.lat}&centerLon=${ic.lon}&zoomLevel=16`,{headers:{appKey:keys.tmap,accept:'application/json'}});
+  if(!r.ok) throw new Error('교통정보 '+r.status);
+  const j=await r.json(); const lat0=rt.poly[0][1];
+  let main=0, ramp=0, nMain=0, nRamp=0;
+  for(const f of j.features||[]){
+    if(f.geometry.type!=='LineString') continue; const p=f.properties;
+    const cs=f.geometry.coordinates.map(c=>[+c[0],+c[1]]); if(cs.length<2) continue;
+    const cong=+p.congestion||0;
+    const s=project(rt.poly,rt.cum,cs[0],lat0), e=project(rt.poly,rt.cum,cs[cs.length-1],lat0);
+    const sg=Math.min(e.seg,rt.poly.length-2); const rb=bearing(rt.poly[sg],rt.poly[sg+1]);
+    if(p.roadType==='001' && s.d<40 && e.d<40){
+      if(angDiff(bearing(cs[0],cs[cs.length-1]),rb)>60 || e.along<s.along) continue;
+      if(e.along<ic.along-1500 || s.along>ic.along+300) continue;
+      nMain++; if(cong>main) main=cong;
+    } else if(e.d<80 && s.d>80 && Math.abs(e.along-ic.along)<1500 && angDiff(bearing(cs[cs.length-2],cs[cs.length-1]),rb)<70){
+      nRamp++; if(cong>ramp) ramp=cong;
+    }
+  }
+  if(nMain+nRamp===0) return {announce:true, main, ramp, reason:'교통정보 없음 → 안내'};
+  const announce = main>=2 || ramp>=2;
+  return {announce, main, ramp, reason:`본선 ${CONG[main]} · 합류 ${nRamp?CONG[ramp]:'정보없음'} → ${announce?'안내':'생략'}`};
+}
+
 /* ===================== 네이티브(APK) ===================== */
 const NATIVE = (()=>{ try{ return !!(window.Android && Android.isNative && Android.isNative()); }catch(e){ return false; } })();
 const spokenName = n => n.replace(/JCT$/,' 분기점').replace(/IC$/,' 나들목');
-function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
+function nativeStart(){ if(!NATIVE||!route) return; const targets=ics.filter(i=>i.kind==='pass'); try{ Android.startGuide(JSON.stringify({poly:route.poly,cum:route.cum,targets:targets.map(t=>({name:spokenName(t.name),along:t.along})),dist:pref.dist,phrase:pref.phrase,tmapKey:keys.tmap,lat0:route.poly[0][1],targetsGeo:targets.map(t=>[t.lon,t.lat])})); }catch(e){ log('네이티브 시작 실패 '+e.message); } }
 
 /* ===================== 음성 ===================== */
 let voice=null;
@@ -421,9 +450,19 @@ function onProgress(along, speedKmh){
   $('d-icname').textContent=next.name; $('d-dist').textContent=n; $('d-distunit').textContent=u;
   // CCTV: 5km 전부터 가장 가까운 카메라 표시
   if(gap<5000 && drive.cctvFor!==next.name){ drive.cctvFor=next.name; showCCTV(next); }
-  // 안내: 설정 거리 전
-  if(gap<=pref.dist && gap>200 && !drive.announced.has(next.name)){
+  // 판정: 안내 거리 800m 전에 교통정보 조회 (IC당 1회)
+  drive.merge=drive.merge||{};
+  if(gap<=pref.dist+800 && !(next.name in drive.merge)){
+    drive.merge[next.name]=null;
+    checkMerge(route,next).then(m=>{ drive&&(drive.merge[next.name]=m); log(`${next.name}: ${m.reason}`); })
+      .catch(e=>{ drive&&(drive.merge[next.name]={announce:true,reason:'조회 실패 → 안내'}); log(`${next.name}: 교통정보 조회 실패 → 안내`); });
+  }
+  const m=drive.merge[next.name];
+  $('d-nextlabel').textContent = m? `다음 합류 지점 · ${m.reason}` : (gap<=pref.dist+800?'다음 합류 지점 · 교통정보 확인 중':'다음 합류 지점');
+  // 안내: 설정 거리 전 (판정 결과가 아직 없으면 500m 더 기다렸다가 안내)
+  if(gap<=pref.dist && gap>200 && !drive.announced.has(next.name) && (m || gap<pref.dist-500)){
     drive.announced.add(next.name);
+    if(m && !m.announce){ log(`${next.name} 생략 (원활)`); return; }
     const text=pref.phrase.replace('{IC}', spokenName(next.name));
     if(!drive.native) speak(text); $('d-alert').textContent=text; $('d-alert').hidden=false; log('안내: '+next.name);
     setTimeout(()=>{ if(drive) $('d-alert').hidden=true; }, 25000);
