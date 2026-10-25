@@ -41,6 +41,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     private boolean free; private double[][] allIc; private String[] allIcName;
     private final Map<String, Long> freeDone = new HashMap<>(); private final Set<String> freeReq = new HashSet<>();
     private final Map<String, Boolean> freeDec = new java.util.concurrent.ConcurrentHashMap<>();
+    private double[] lastPt; private double lastHd = -1;
+    private volatile boolean requireMain; // 목적지 없는 모드: 내 방향 고속도로 본선이 확인될 때만 안내
 
     private double[][] poly; private double[] cum;
     private String[] tName; private double[] tAlong;
@@ -94,7 +96,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         allIc = new double[a.length()][2]; allIcName = new String[a.length()];
         for (int i = 0; i < a.length(); i++) { JSONArray q = a.getJSONArray(i); allIcName[i] = q.getString(0); allIc[i][0] = q.getDouble(1); allIc[i][1] = q.getDouble(2); }
         tmapKey = o.optString("tmapKey", ""); distM = o.optDouble("dist", 2000); phrase = o.optString("phrase", phrase);
-        freeDone.clear(); freeReq.clear(); freeDec.clear(); poly = null;
+        freeDone.clear(); freeReq.clear(); freeDec.clear(); poly = null; lastPt = null; lastHd = -1;
     }
 
     private static double hav(double lon1, double lat1, double lon2, double lat2) {
@@ -110,8 +112,13 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     /** 목적지 없는 모드: 진행 방향 앞쪽 IC를 찾아 혼잡하면 안내 */
     private void onFree(Location loc) {
         double kmh = loc.hasSpeed() ? loc.getSpeed() * 3.6 : 0;
-        if (kmh < 50 || !loc.hasBearing()) { update(String.format(Locale.KOREA, "대기 중 (%.0fkm/h, 50km/h 이상에서 동작)", kmh)); return; }
-        double[] me = {loc.getLongitude(), loc.getLatitude()}; double hd = loc.getBearing();
+        double[] me = {loc.getLongitude(), loc.getLatitude()};
+        // 진행 방향: 빠를 땐 GPS 방향값, 느릴 땐 30m 이상 이동한 위치 변화로 계산 (정체 중에도 동작)
+        if (loc.hasBearing() && kmh >= 15) lastHd = loc.getBearing();
+        if (lastPt == null) lastPt = me;
+        else if (hav(lastPt[0], lastPt[1], me[0], me[1]) >= 30) { if (kmh < 15) lastHd = bearing(lastPt, me); lastPt = me; }
+        if (lastHd < 0) { update("진행 방향 확인 중 (조금 이동하면 시작)"); return; }
+        double hd = lastHd;
         int best = -1; double bestD = 1e9;
         for (int i = 0; i < allIc.length; i++) {
             double d = hav(me[0], me[1], allIc[i][0], allIc[i][1]);
@@ -128,10 +135,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             final double[] ic = allIc[best];
             // 현재 위치 → IC → IC 너머 500m 를 임시 경로로 보고 판정
             final double[][] pl = {me, ic, offset(ic, bearing(me, ic), 500)};
-            new Thread(() -> freeDec.put(key, judgeOn(pl, ic))).start();
+            new Thread(() -> freeDec.put(key, judgeFree(pl, ic))).start();
         }
         Boolean dec = freeDec.get(key);
-        update(String.format(Locale.KOREA, "%s %.1fkm 앞%s", key, bestD / 1000, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활"));
+        update(String.format(Locale.KOREA, "%s %.1fkm 앞 · %.0fkm/h%s", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec ? " · 혼잡→안내" : " · 원활/고속도로 아님"));
         if (bestD <= distM && dec != null) {
             freeDone.put(key, now); freeReq.remove(key); freeDec.remove(key);
             if (dec) say(phrase.replace("{IC}", key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목")));
@@ -176,6 +183,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     /** 티맵 실시간 교통정보로 합류부 혼잡 판정 — 웹앱 checkMerge()와 같은 규칙 */
     private void judge(int i) { decision.put(i, judgeOn(null, tGeo[i], tAlong[i])); }
 
+    private synchronized boolean judgeFree(double[][] pl, double[] icPt) { requireMain = true; try { return judgeOn(pl, icPt); } finally { requireMain = false; } }
+
     private boolean judgeOn(double[][] pl, double[] icPt) {
         double[] cm = new double[pl.length];
         for (int k = 1; k < pl.length; k++) cm[k] = cm[k - 1] + hav(pl[k - 1][0], pl[k - 1][1], pl[k][0], pl[k][1]);
@@ -215,8 +224,9 @@ public class GuideService extends Service implements LocationListener, TextToSpe
                     nRamp++; ramp = Math.max(ramp, cong);
                 }
             }
-            if (nMain + nRamp > 0) ann = main >= 2 || ramp >= 2;
-        } catch (Exception ex) { ann = true; }
+            if (requireMain) ann = nMain > 0 && (main >= 2 || ramp >= 2); // 고속도로 본선 미확인이면 안내 안 함
+            else if (nMain + nRamp > 0) ann = main >= 2 || ramp >= 2;
+        } catch (Exception ex) { ann = !requireMain; }
         return ann;
     }
 
