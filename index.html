@@ -96,7 +96,13 @@ button.spd.on{background:var(--accent);color:#1a1200;border-color:var(--accent);
     <h2>데이터</h2>
     <div class="muted">IC·JCT 좌표 <b id="ic-count">0</b>곳 내장 (한국도로공사, 2026-10-24 기준)</div>
   </div>
-  <div class="row"><button id="b-tohome" class="primary grow">목적지 선택으로</button></div>
+  <div class="card" id="log-card" hidden>
+    <h2>최근 동작 기록</h2>
+    <div class="muted">안내가 안 나오면 이 화면을 캡처해 주세요.</div>
+    <div class="row"><button id="b-log" class="grow">기록 새로고침</button></div>
+    <div id="log-box" class="log" style="max-height:340px;white-space:pre-wrap"></div>
+  </div>
+  <div class="row"><button id="b-tohome" class="primary grow">처음 화면으로</button></div>
 </section>
 
 <!-- ============ 목적지 ============ -->
@@ -343,7 +349,9 @@ $('b-savekeys').onclick=async()=>{
 $('b-testtts').onclick=()=>speak(($('s-phrase').value||pref.phrase).replace('{IC}','서울주 분기점'));
 $('b-savepref').onclick=()=>{ pref.dist=Math.max(500,+$('s-dist').value||2000); pref.phrase=$('s-phrase').value||pref.phrase; pref.autoFree=$('s-autofree').checked; pref.sayClear=$('s-sayclear').checked; store.set('pref',pref); $('keys-status').textContent='안내 설정 저장됨'; };
 $('b-tohome').onclick=()=>show('v-home');
-$('b-tosetup').onclick=()=>show('v-setup');
+function loadLog(){ try{ $('log-box').textContent = Android.getLog() || '기록 없음'; }catch(e){ $('log-box').textContent='기록을 읽을 수 없음'; } }
+$('b-tosetup').onclick=()=>{ show('v-setup'); if(NATIVE && Android.getLog){ $('log-card').hidden=false; loadLog(); } };
+$('b-log').onclick=loadLog;
 
 /* ===================== 목적지 화면 ===================== */
 function renderFavs(){

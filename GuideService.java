@@ -36,6 +36,18 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     static final int NID = 7;
     static volatile String pending;
     static volatile boolean running;
+    static final java.util.LinkedList<String> LOG = new java.util.LinkedList<>();
+    static android.content.SharedPreferences sp;
+    static synchronized void log(String m) {
+        String t = new java.text.SimpleDateFormat("MM-dd HH:mm:ss", Locale.KOREA).format(new java.util.Date());
+        LOG.addFirst(t + " " + m); while (LOG.size() > 300) LOG.removeLast();
+        if (sp != null) sp.edit().putString("log", android.text.TextUtils.join("\n", LOG)).apply();
+    }
+    static synchronized String dump(android.content.Context c) {
+        if (LOG.isEmpty()) { String s = c.getSharedPreferences("lg", MODE_PRIVATE).getString("log", ""); if (!s.isEmpty()) java.util.Collections.addAll(LOG, s.split("\n")); }
+        return android.text.TextUtils.join("\n", LOG);
+    }
+    private long lastFixLog;
     private volatile boolean stopped;
     static final String ACTION_FREE = "free";
     private boolean free; private double[][] allIc; private String[] allIcName;
@@ -64,6 +76,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         if (intent != null && ACTION_STOP.equals(intent.getAction())) { stopAll(); return START_NOT_STICKY; }
         if (intent == null) { stopAll(); return START_NOT_STICKY; } // 시스템 재시작 시 데이터 없음 → 종료
         stopped = false; running = true;
+        if (sp == null) sp = getSharedPreferences("lg", MODE_PRIVATE); dump(this);
+        log("시작: " + (ACTION_FREE.equals(intent.getAction()) ? "목적지 없음 모드" : "목적지 경로 모드"));
         startFg("안내 준비 중");
         free = intent != null && ACTION_FREE.equals(intent.getAction());
         try { if (free) loadFree(pending); else load(pending); } catch (Exception e) { update("데이터 오류"); }
@@ -125,7 +139,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         if (loc.hasBearing() && kmh >= 15) lastHd = loc.getBearing();
         if (lastPt == null) lastPt = me;
         else if (hav(lastPt[0], lastPt[1], me[0], me[1]) >= 30) { if (kmh < 15) lastHd = bearing(lastPt, me); lastPt = me; }
-        if (lastHd < 0) { update("진행 방향 확인 중 (조금 이동하면 시작)"); return; }
+        if (lastHd < 0) { update("진행 방향 확인 중 (조금 이동하면 시작)"); if (System.currentTimeMillis() - lastFixLog > 60000) { lastFixLog = System.currentTimeMillis(); log("위치 수신, 진행 방향 계산 대기"); } return; }
         double hd = lastHd;
         int best = -1; double bestD = 1e9;
         for (int i = 0; i < allIc.length; i++) {
@@ -135,22 +149,25 @@ public class GuideService extends Service implements LocationListener, TextToSpe
             if (d < bestD) { bestD = d; best = i; }
         }
         long now = System.currentTimeMillis();
-        if (best < 0) { update(String.format(Locale.KOREA, "주행 중 %.0fkm/h · 앞쪽 합류 지점 없음", kmh)); return; }
+        if (best < 0) { update(String.format(Locale.KOREA, "주행 중 %.0fkm/h · 앞쪽 합류 지점 없음", kmh)); if (now - lastFixLog > 60000) { lastFixLog = now; log(String.format(Locale.KOREA, "위치 수신 중 %.0fkm/h 방향 %.0f° · 3.5km 내 앞쪽 IC 없음", kmh, hd)); } return; }
         final String key = allIcName[best]; Long done = freeDone.get(key);
         if (done != null && now - done < 15 * 60 * 1000) { update(key + " 통과 중"); return; }
         if (bestD <= distM + 800 && !freeReq.contains(key)) {
             freeReq.add(key);
             final double[] ic = allIc[best];
-            // 현재 위치 → IC → IC 너머 500m 를 임시 경로로 보고 판정
-            final double[][] pl = {me, ic, offset(ic, bearing(me, ic), 500)};
-            new Thread(() -> { boolean a = judgeFree(pl, ic); freeDec.put(key, a ? 1 : (lastNMain > 0 ? 0 : -1)); }).start();
+            // 내 진행 방향으로 뻗은 선(뒤 300m ~ 앞 IC거리+600m)을 임시 경로로 보고 판정
+            final double[][] pl = {offset(me, (hd + 180) % 360, 300), me, offset(me, hd, bestD + 600)};
+            final double icA = 300 + bestD;
+            log(String.format(Locale.KOREA, "대상 %s %.1fkm 앞, 방향 %.0f°, %.0fkm/h → 교통정보 조회", key, bestD / 1000, hd, kmh));
+            new Thread(() -> { boolean a = judgeFree(pl, ic, icA); int v = a ? 1 : (lastNMain > 0 ? 0 : -1); freeDec.put(key, v);
+                log(key + " 판정: " + lastSummary + " → " + (v == 1 ? "혼잡(안내)" : v == 0 ? "원활" : "고속도로 본선 미확인")); }).start();
         }
         Integer dec = freeDec.get(key);
         update(String.format(Locale.KOREA, "%s%s %.1fkm 앞 · %.0fkm/h%s", free ? "" : "[경로 이탈·진행방향 기준] ", key, bestD / 1000, kmh, dec == null ? (freeReq.contains(key) ? " · 확인 중" : "") : dec == 1 ? " · 혼잡→안내" : dec == 0 ? " · 원활" : " · 고속도로 아님"));
         if (bestD <= distM && dec != null) {
             freeDone.put(key, now); freeReq.remove(key); freeDec.remove(key);
             String sp = key.replaceAll("JCT$", " 분기점").replaceAll("IC$", " 나들목");
-            if (dec == 1) say(phrase.replace("{IC}", sp)); else if (dec == 0 && sayClear) say(sp + " 합류 원활");
+            if (dec == 1) say(phrase.replace("{IC}", sp)); else if (dec == 0 && sayClear) say(sp + " 합류 원활"); else log(key + " 무음 처리 (" + (dec == -1 ? "고속도로 아님" : "원활·알림 꺼짐") + ")");
         }
     }
 
@@ -159,7 +176,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         lm = (LocationManager) getSystemService(LOCATION_SERVICE);
         try {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0, this, Looper.getMainLooper());
-        } catch (SecurityException e) { update("위치 권한 없음"); }
+            log("GPS 수신 시작");
+        } catch (SecurityException e) { update("위치 권한 없음"); log("위치 권한 없음"); }
     }
 
     @Override
@@ -170,6 +188,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
         double[] pr = project(loc.getLongitude(), loc.getLatitude());
         if (pr[0] > 250) {
             offCount++;
+            if (offCount == 5) log("경로 이탈 → 진행 방향 기준으로 전환");
             if (offCount >= 5 && allIc != null) { onFree(loc); return; } // 경로 이탈 → 실제 진행 방향 기준
             update(String.format(Locale.KOREA, "경로에서 %.0fm 벗어남", pr[0])); return;
         }
@@ -195,9 +214,17 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     @Override public void onProviderDisabled(String p) { update("GPS 꺼짐"); }
 
     /** 티맵 실시간 교통정보로 합류부 혼잡 판정 — 웹앱 checkMerge()와 같은 규칙 */
-    private void judge(int i) { decision.put(i, judgeOn(null, tGeo[i], tAlong[i])); }
+    private void judge(int i) { boolean a = judgeOn(null, tGeo[i], tAlong[i]); decision.put(i, a); log(tName[i] + " 판정(경로): " + lastSummary + " → " + (a ? "안내" : "원활")); }
 
-    private synchronized boolean judgeFree(double[][] pl, double[] icPt) { requireMain = true; try { return judgeOn(pl, icPt); } finally { requireMain = false; } }
+    private synchronized boolean judgeFree(double[][] pl, double[] icPt, double icA) {
+        requireMain = true;
+        try {
+            double[] cm = new double[pl.length];
+            for (int k = 1; k < pl.length; k++) cm[k] = cm[k - 1] + hav(pl[k - 1][0], pl[k - 1][1], pl[k][0], pl[k][1]);
+            return judgeOn(new Object[]{pl, cm}, icPt, icA);
+        } finally { requireMain = false; }
+    }
+    private volatile String lastSummary = "";
 
     private boolean judgeOn(double[][] pl, double[] icPt) {
         double[] cm = new double[pl.length];
@@ -230,18 +257,20 @@ public class GuideService extends Service implements LocationListener, TextToSpe
                 double[] s = projectSeg(P, C, a[0], a[1]), e = projectSeg(P, C, b[0], b[1]);
                 int sg = (int) Math.min(e[2], P.length - 2);
                 double rb = bearing(P[sg], P[sg + 1]);
-                if ("001".equals(p.optString("roadType")) && s[0] < 40 && e[0] < 40) {
-                    if (angDiff(bearing(a, b), rb) > 60 || e[1] < s[1]) continue;
+                double tolM = requireMain ? 120 : 40, tolR = requireMain ? 150 : 80;
+                if ("001".equals(p.optString("roadType")) && s[0] < tolM && e[0] < tolM) {
+                    if (angDiff(bearing(a, b), rb) > (requireMain ? 30 : 60) || e[1] < s[1]) continue;
                     if (e[1] < icA - 1500 || s[1] > icA + 300) continue;
                     nMain++; main = Math.max(main, cong);
-                } else if (e[0] < 80 && s[0] > 80 && Math.abs(e[1] - icA) < 1500 && angDiff(bearing(b2, b), rb) < 70) {
+                } else if (e[0] < tolR && s[0] > tolR && Math.abs(e[1] - icA) < 1500 && angDiff(bearing(b2, b), rb) < 70) {
                     nRamp++; ramp = Math.max(ramp, cong);
                 }
             }
             lastNMain = nMain;
+            lastSummary = "본선 " + nMain + "개(최고 " + CONG[main] + "), 램프 " + nRamp + "개(최고 " + CONG[ramp] + "), 링크 " + (fs == null ? 0 : fs.length());
             if (requireMain) ann = nMain > 0 && (main >= 2 || ramp >= 2); // 고속도로 본선 미확인이면 안내 안 함
             else if (nMain + nRamp > 0) ann = main >= 2 || ramp >= 2;
-        } catch (Exception ex) { ann = !requireMain; lastNMain = 0; }
+        } catch (Exception ex) { ann = !requireMain; lastNMain = 0; lastSummary = "조회 실패: " + ex.getMessage(); log("교통정보 조회 실패: " + ex.getMessage()); }
         return ann;
     }
 
@@ -274,8 +303,10 @@ public class GuideService extends Service implements LocationListener, TextToSpe
 
     @Override
     public void onInit(int status) {
+        if (status != TextToSpeech.SUCCESS) log("음성엔진 초기화 실패: " + status);
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(Locale.KOREAN);
+            int lr = tts.setLanguage(Locale.KOREAN);
+            log("음성엔진 준비, 한국어 " + (lr >= 0 ? "사용 가능" : "없음(코드 " + lr + ")"));
             ttsReady = true;
             if (queued != null) { say(queued); queued = null; }
         }
@@ -284,7 +315,8 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     private void say(String s) {
         if (stopped) return;
         if (!ttsReady) { queued = s; return; }
-        tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "g" + System.currentTimeMillis());
+        int r = tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "g" + System.currentTimeMillis());
+        log("음성: " + s + (r == TextToSpeech.SUCCESS ? "" : " (출력 실패 " + r + ")"));
     }
 
     private Notification build(String text) {
@@ -312,7 +344,7 @@ public class GuideService extends Service implements LocationListener, TextToSpe
     }
 
     private void stopAll() {
-        stopped = true; running = false;
+        stopped = true; running = false; log("종료");
         if (lm != null) { lm.removeUpdates(this); lm = null; }
         if (tts != null) { tts.stop(); tts.shutdown(); tts = null; ttsReady = false; }
         stopForeground(true);

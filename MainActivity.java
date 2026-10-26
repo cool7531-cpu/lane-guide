@@ -115,6 +115,7 @@ public class MainActivity extends Activity {
     class Bridge {
         @JavascriptInterface public boolean isNative() { return true; }
         @JavascriptInterface public boolean isRunning() { return GuideService.running; }
+        @JavascriptInterface public String getLog() { return GuideService.dump(MainActivity.this); }
         @JavascriptInterface public boolean consumeAutoStart() { boolean v = autoStartPending; autoStartPending = false; return v; }
 
         @JavascriptInterface public void startGuide(String json) {
